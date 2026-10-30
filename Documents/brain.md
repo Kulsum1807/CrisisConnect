@@ -23,13 +23,13 @@ Keep entries short. This file is a working memory, not a report.
 
 | Item | Value |
 |---|---|
-| Current phase | Phase 1 to 2 documentation complete; ready to start Phase 3 (database design) then Phase 4 (backend foundation) |
-| Last completed | PRD, Design Document, Architecture and Tools Document, Testing and API Reference documents written |
-| Working on now | (fill in) |
-| Next action | Create repository and folder structure; set up Atlas; write Mongoose schemas from Design Document section 5 |
+| Current phase | Phase 9 (Maps and Location) completed; ready for Phase 10 (Chat and Notifications) |
+| Last completed | Phase 9 Maps and Location (Leaflet, location capture, live responder tracking with throttling, alert escalation timers) |
+| Working on now | Verification and final defense briefing for Phase 9 |
+| Next action | Phase 10: Chat and Notifications (Private incident chat, cursor pagination, persisted in-app notifications) |
 | Blockers | None |
-| Branch | (fill in) |
-| Last commit | (fill in) |
+| Branch | main |
+| Last commit | Phase 9 Maps and Location completed and verified |
 
 ---
 
@@ -175,6 +175,8 @@ Incident.findOneAndUpdate(
 | ADR-01 | 2026-10-05 | Layered modular monolith | One developer; simpler | Decided |
 | ADR-03 | 2026-10-05 | REST for commands, Socket.IO for pushes | Validation + low latency | Decided |
 | ADR-10 | 2026-10-05 | Deploy as one service first | Avoid cross-site cookies and CORS | Proposed |
+| D-09 | 2026-10-22 | Socket events are delivery hints; DB is sole source of truth; handlers merge idempotently | Network partitions and socket re-connections can drop or duplicate packets; re-fetching REST restores true state | Decided |
+| D-10 | 2026-10-22 | Custom SVG divIcons for Leaflet; throttled location emission (5s) | Solves bundler PNG path issues in Vite and prevents mobile network saturation while delivering live emergency telemetry | Decided |
 
 Add new decisions here with the same format (ID, date, decision, reason, status).
 
@@ -301,13 +303,13 @@ Status: `[ ]` not started, `[~]` in progress, `[x]` done.
 | 0 | Existing project analysis | [x] | Limitations listed in PRD section 2 |
 | 1 | Requirements and feature specification | [x] | PRD v1.0 |
 | 2 | System design and architecture | [x] | Design Document, Architecture and Tools |
-| 3 | Database design | [ ] | Schemas from Design Document section 5 |
-| 4 | Backend foundation | [ ] | Repo, structure, config, error handling |
-| 5 | Authentication and authorization | [ ] | Cookies, refresh, RBAC, validation, rate limit |
-| 6 | Incident management | [ ] | Lifecycle, severity, claim, assign, cancel |
-| 7 | React frontend | [ ] | Layouts, routes, auth pages, dashboards |
-| 8 | Real-time communication | [ ] | Socket auth, rooms, events |
-| 9 | Maps and location | [ ] | Leaflet, geolocation, live responder marker |
+| 3 | Database design | [x] | Mongoose schemas with 2dsphere indexes, counters |
+| 4 | Backend foundation | [x] | Repo, structure, config, errorMiddleware, Zod |
+| 5 | Authentication and authorization | [x] | Cookies, refresh, RBAC, validation, rate limit |
+| 6 | Incident management | [x] | Lifecycle, severity, atomic claim, cancel, decline |
+| 7 | React frontend | [x] | Layouts, routes, auth pages, dashboards, responder safety |
+| 8 | Real-time communication | [x] | Socket auth, rooms, realtime emitters, grace period, hooks, tests |
+| 9 | Maps and location | [x] | Leaflet, geolocation, live responder tracking, alert escalation |
 | 10 | Chat and notifications | [ ] | Incident chat, persisted notifications |
 | 11 | Admin and analytics | [ ] | Verification, assignment, dashboard, aggregates |
 | 12 | Security hardening | [ ] | Review every route and socket event |
@@ -317,14 +319,14 @@ Status: `[ ]` not started, `[~]` in progress, `[x]` done.
 | 16 | Interview preparation | [ ] | Explanations, bug stories, question banks |
 
 ### MVP checklist
-- [ ] Register, login, logout; roles enforced on the server
-- [ ] SOS and manual report create persistent incidents with computed severity
-- [ ] Lifecycle enforced; statusHistory recorded
-- [ ] Responders go ONLINE, see incidents, accept exactly once
-- [ ] Admin verifies responders and assigns incidents
-- [ ] Role-limited incident lists
-- [ ] Real-time status updates without refresh
-- [ ] Map shows incident and user locations
+- [x] Register, login, logout; roles enforced on the server
+- [x] SOS and manual report create persistent incidents with computed severity
+- [x] Lifecycle enforced; statusHistory recorded
+- [x] Responders go ONLINE, see incidents, accept exactly once
+- [x] Admin verifies responders and assigns incidents
+- [x] Role-limited incident lists
+- [x] Real-time status updates without refresh
+- [x] Map shows incident and user locations
 - [ ] Deployed and demonstrated end to end
 
 ---
@@ -359,6 +361,63 @@ Problems / bugs (BUG ids):
 Decisions (D ids):
 Next:
 ```
+
+### 2026-10-23 (Pre-Phase 10 Feature: Nearby Help - Hospitals & Police)
+Goal: Add "Nearby Help" feature querying hospitals and police stations from OpenStreetMap via Overpass API with zero external backend dependencies (built-in fetch), in-memory TTL caching, fail-safe 503 handling, interactive Leaflet markers, accessible list view, and emergency attribution.
+Done:
+- Backend: Configured `OVERPASS_URL` with default `https://overpass-api.de/api/interpreter` in `env.js` and `.env.example`.
+- Route: `GET /api/places/nearby` with authentication, rate limiting, and Zod query validation (`lat`, `lng`, `radius` default 5000 max 10000, `type` enum).
+- Service: Built `placesService.js` using Node's built-in `fetch` with 8-second `AbortController` timeout, Overpass QL query generation, element center mapping for ways/relations, Haversine distance calculation in meters, ascending distance sorting (capped at 20), and 10-minute in-memory cache keyed by 3-decimal rounded coordinates.
+- Error resilience: Handles Overpass timeout/failure cleanly by logging and returning a friendly 503 `SERVICE_UNAVAILABLE` response; never crashes.
+- Express 5 compatibility: Enhanced `validate.js` middleware to handle `req.query` without mutating read-only getter.
+- Frontend: Created `placesService.js`, `useNearbyPlaces.js` custom hook, `createHospitalIcon()` and `createPoliceIcon()` with custom SVG and text badges, `NearbyHelpList.jsx` (with directions links, call links, OpenStreetMap attribution, and Call 112 emergency CTA).
+- Map & Standalone: Integrated "Nearby Help" toggle and markers into `IncidentMap.jsx`; created standalone `/nearby-help` directory page with live GPS centering and radius filter; linked in navbar.
+- Automated tests: 6 backend tests in `nearbyPlaces.test.js` (all 107 backend tests passing across 10 suites); 7 frontend tests in `nearbyHelp.test.jsx` (all 49 frontend tests passing across 8 suites). Production Vite build verified.
+Learned: Overpass API ways and relations place coordinates in `center.lat` / `center.lon` rather than top-level fields; in Express 5 `req.query` is a prototype getter and cannot be directly reassigned.
+Decisions: D-12 (In-memory 10-minute coordinate cache rounded to 3 decimals to reduce external Overpass query load while keeping emergency places data accurate).
+Next: Phase 10: Chat and Notifications (Private incident chat, cursor pagination, persistent in-app notifications).
+
+### 2026-10-23 (Pre-Phase 10 Feature: Medical Info Card)
+Goal: Add privacy-sensitive "Medical Info Card" feature with strict access control, leak prevention, live-query authorization, and responsive frontend UI.
+Done:
+- Backend User model: Added `medicalInfo` subdocument (`bloodGroup`, `allergies`, `conditions`, `medications`, `notes`, `shareWithResponders`) with `select: false` so it is never returned by default.
+- Strict Zod validation: `updateMedicalInfoSchema` with string trimming, array/item limits, notes limit, and `.strict()` rejecting unknown fields.
+- User routes: `GET`, `PUT`, `DELETE /api/users/me/medical-info` (owner is always `req.user.id`).
+- Incident endpoint: `GET /api/incidents/:id/medical-info` (responder role required). Strictly returns creator's live `medicalInfo` ONLY when: requester is assigned responder, status is `ACCEPTED` or `IN_PROGRESS`, and creator has `shareWithResponders === true`. Otherwise returns `null` without revealing whether data exists (no probing/timing leakage).
+- Data leak audit: Verified zero leakage in default queries, `populate()`, socket events, serializers, and log lines.
+- Frontend: Created `medicalService.js`, `useMedicalInfo.js` hook (`useMyMedicalInfo`, `useIncidentMedicalInfo`), `MedicalInfoSection.jsx` (citizen profile with blood group select, tag inputs, notes, opt-in switch with privacy guarantee, clear modal), and `MedicalInfoCard.jsx` (responder incident details view with lock note when unavailable and hidden when status is terminal).
+- Automated tests: 18 backend tests in `medicalInfo.test.js` (all 101 backend tests passing across 9 suites); 7 frontend tests in `medical.test.jsx` (all 42 frontend tests passing across 7 suites). Clean Vite production build.
+Learned: Medical health vitals require `select: false` at schema level and dynamic live evaluation on every request (no caching) to ensure patient consent toggles take effect instantly.
+Decisions: D-11 (Zero-leakage envelope returning `null` on failed conditions to prevent information discovery; strict subdocument isolation with Mongoose `$unset`).
+Next: Phase 10: Chat and Notifications (Private incident chat, cursor pagination, persistent in-app notifications).
+
+### 2026-10-22 (Phase 9: Maps and Location)
+Goal: Interactive Leaflet maps for all roles, reliable GPS capture, live responder tracking with throttling, and automatic alert escalation timers.
+Done:
+- Integrated Leaflet + React-Leaflet with custom SVG divIcon markers (severity-coloured, live responder radar beacon, user pulse) solving bundler asset paths.
+- Created single geo utility (`frontend/src/utils/geo.js`) converting between GeoJSON `[lng, lat]` and Leaflet `[lat, lng]`, validating boundaries and computing Haversine distance.
+- Implemented `IncidentMap` (severity pins, live responder marker, fit-bounds), `LocationPicker` (click/drag pin, GPS detect, manual address fallback), and `AdminLiveMap`.
+- Created `useGeolocation` hook (fail-safe fallback when location is denied/timeout) and `useResponderLocation` hook (throttled live GPS socket emission every 5-8s while active).
+- Backend: Handled `responder:location` socket event with role authorization, assigned-responder check, active status check, and 5-second rate throttling.
+- Alert Escalation Service (`escalationService.js`): Starts timer on incident creation; widens search radius (2x) and alerts admins if unclaimed past timeout; cleanly cancelled on claim/cancel.
+- Automated test coverage: 13 tests in Jest (`mapsAndLocation.test.js`) and 12 tests in Vitest (`maps.test.jsx`). All 83 backend tests and 35 frontend tests passing.
+Learned: Leaflet and GeoJSON coordinate orders are inverted ([lat, lng] vs [lng, lat]); consolidating transformations into a single utility prevents inverted coordinate bugs.
+Decisions: D-10 (SVG divIcons for retina rendering without asset bundling issues; 5-second location throttling to prevent network flooding).
+Next: Phase 10: Chat and Notifications (Private incident chat, cursor pagination, persistent in-app notifications).
+
+### 2026-10-22 (Phase 8: Real-Time Communication)
+Goal: Authenticated sockets, rooms, live alerts, live status updates, responder disconnect grace period, and resilient frontend sync.
+Done:
+- Attached Socket.IO to HTTP server with cookie/token handshake auth (rejects expired/suspended).
+- Implemented rooms: `user:<id>`, `responders:online`, `admins`, `incident:<id>` with participant/admin checks and `error:event`.
+- Created realtime emitter helper with least-information serialization for `incident:new`, `incident:updated`, `incident:taken`, `notification:new`.
+- Implemented responder disconnect grace period (30s production/500ms test) transitioning to OFFLINE if not reconnected.
+- Frontend: Single socket instance in SocketContext, `useSocketEvent` auto-cleanup, `useIncidentRoom` auto-rejoin, `ConnectionIndicator` live status, idempotent client state merges and background REST re-fetches.
+- Full automated test coverage in Jest (`sockets.test.js`) and Vitest (`socket.test.jsx`).
+Learned: WebSocket events are delivery hints and never replace database truth; client reconnects must always trigger REST ground-truth synchronisation.
+Problems / bugs: Handshake auth with cross-origin cookies in dev resolved via multi-source token resolution (cookies, auth payload, Bearer header).
+Decisions: D-09 (Socket events as hints, idempotent UI patching, room authorization boundaries).
+Next: Phase 9: Maps and Location (Leaflet, location capture, live responder tracking, alert escalation).
 
 ### 2026-10-05
 Goal: finish planning documents before writing code.

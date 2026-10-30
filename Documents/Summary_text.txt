@@ -1,0 +1,1394 @@
+CrisisConnect 2.0
+
+Full-Stack MERN Real-Time Emergency Response and Incident Management Platform
+
+Project Summary (Reviewed and Revised Edition)
+
+Review Notes: What Changed and Why
+
+The original file was really two documents pasted together: a chat-style planning draft (sections 1 to 25, written as "we will / I think") followed by a formal specification (sections 1 to 55). They repeated each other almost line for line. This edition keeps one clean version and fixes the design gaps found along the way. Anything marked [Decision] is a recommendation you can accept or reverse.
+
+Removed
+
+Item
+
+Reason
+
+Entire first half (chat-style draft, sections 1 to 25)
+
+Duplicated by the formal half; kept only the unique ideas (deterministic core, interview angles).
+
+Numbering gaps (23, 24 missing; "Phase 16" left blank; stray "or you can just create..." text)
+
+Leftovers from pasting; Phase 16 is now Interview Preparation and the document-grouping idea is a proper section.
+
+Conversational lines ("I think we should", "Drone integration", emoji, "Kulsum / Rahul" sample chat)
+
+Not appropriate for a formal project document; sample chat uses neutral names.
+
+Repeated lists (roles, API map, folder trees, phases appeared 2 to 3 times)
+
+Merged to one copy each.
+
+CREATED state as a separate lifecycle state [Decision]
+
+CREATED and PENDING lasted milliseconds apart, so the extra state added nothing. PENDING is now the initial state.
+
+Separate responderLocations collection [Decision]
+
+Latest location now lives on the responder profile; an optional TTL trail collection is listed as a stretch item.
+
+
+
+Fixed
+
+Problem in original
+
+Fix in this edition
+
+Location stored as plain latitude and longitude
+
+GeoJSON Point with a 2dsphere index, so "nearest available responder" is a real database query.
+
+Users could in theory pick their own role at registration
+
+Role is never accepted from the client; admins are seeded, responders go through verification.
+
+ASSIGNED vs ACCEPTED and REJECTED were ambiguous
+
+Full transition table: who can move which state to which, with REJECTED defined as admin-rejected invalid or false reports.
+
+Two responders could accept the same incident
+
+Atomic conditional update (findOneAndUpdate on status) specified as the claim mechanism.
+
+Logout with JWT was listed but not designed
+
+Token strategy options and a recommendation added (httpOnly cookies, short-lived access token, refresh token).
+
+Socket.IO had no authentication or room authorization
+
+JWT handshake auth, per-incident rooms, membership check before joining.
+
+Severity rules were vague
+
+Proposed rule table; frontend can only send inputs, backend decides severity.
+
+Security rule applied to REST only
+
+Same ownership checks apply to socket events and chat history.
+
+Security and validation left until Phase 12
+
+Now cross-cutting from Phase 5; Phase 12 becomes hardening and review.
+
+
+
+Added
+
+Non-functional requirements (performance, reliability, privacy, usability) and an emergency-services disclaimer (in India, 112 remains the real emergency number).
+
+Scope tiers: MVP, Core+, Stretch, Out of scope, so the project cannot grow endlessly.
+
+Socket event catalogue, extra REST endpoints (decline, severity override, notifications, verification, refresh), and a reconnect strategy.
+
+Updated schemas with responder profile, status history, decline tracking, indexes and an incident-number counter.
+
+Additional tooling: validation library, Multer and image storage, Helmet, rate limiting, Jest and Supertest.
+
+Documentation plan regrouped into the seven documents you asked for, with a mapping from the 21 numbered files.
+
+Draft 30-second and 1-minute interview explanations, and a list of open decisions.
+
+1. Project Overview
+
+Field
+
+Detail
+
+Project name
+
+CrisisConnect 2.0
+
+Type
+
+Full-stack web application (MERN) with real-time features
+
+Domain
+
+Emergency response, incident management, real-time communication
+
+Core stack
+
+MongoDB, Express.js, React, Node.js
+
+Supporting technologies
+
+Mongoose, Socket.IO, JWT, bcrypt, Axios, React Router, React Leaflet, Vite, MongoDB Atlas, Git/GitHub, Postman, MongoDB Compass
+
+
+
+CrisisConnect is a real-time emergency response and incident management platform that connects people who need help with available responders and administrators. Users can trigger an SOS or file a detailed report, share their location, chat with the assigned responder and track progress. Responders see incoming incidents, accept them, update status and share live location. Administrators monitor the whole system, verify responders, assign incidents and view analytics.
+
+Purpose: a technically strong, explainable prototype that demonstrates authentication, authorization, database design, REST APIs, real-time communication, geolocation, maps, role-based access control, notifications and dashboards. It is not meant to replace professional emergency infrastructure.
+
+Disclaimer (to show in the app): CrisisConnect is a prototype and does not replace official emergency services. In an emergency, contact the local emergency number (112 in India).
+
+Core flow
+
+Emergency reported -> Location captured -> Incident created (PENDING)
+
+  -> Available responder notified -> Responder accepts
+
+  -> Real-time coordination (status, chat, live location)
+
+  -> Incident resolved -> Full history stored
+
+2. Background: Previous Version and Its Limitations
+
+The earlier prototype used React, Vite, React Router, React Leaflet and Socket.IO Client on the frontend, and Python Flask with Flask-SocketIO on the backend, plus the browser Geolocation API, OpenStreetMap/Leaflet and the Gemini API for limited severity analysis. Flow: User, Panic Button, Location, Flask Backend, Socket.IO event, Responder Dashboard.
+
+Limitation of v1
+
+Why it matters
+
+CrisisConnect 2.0
+
+Flask backend, not MERN
+
+Did not match the target stack
+
+React, Express/Node.js, MongoDB
+
+Alerts kept in an in-memory Python list
+
+All alerts lost on server restart
+
+Persistent MongoDB storage
+
+/admin was only a frontend route
+
+No proof a visitor was an admin or responder
+
+Registration, login, bcrypt, JWT, protected routes, RBAC
+
+Role sent by the frontend
+
+A client can claim role = admin
+
+Role read from the database and enforced on the server
+
+One global broadcast chat
+
+Messages not tied to an emergency
+
+Incident-specific chat rooms
+
+Emergency was just an alert flag
+
+No tracking, ownership or history
+
+Incident entity with a defined lifecycle
+
+No responder management
+
+No verification, availability or history
+
+Responder accounts, verification, online/offline/busy, location, history
+
+3. Problem Statement and Objectives
+
+In an emergency, communication becomes fragmented. A person must report the situation, explain where they are, find help, describe what is happening and wait for updates, while responders need the location, severity, details, a way to reach the person and a clear record of who is handling what. CrisisConnect provides one centralized system for reporting, coordination, location tracking and communication.
+
+Objectives
+
+Build a full-stack MERN application with secure authentication and role-based authorization.
+
+Provide SOS and detailed manual reporting with persistent storage in MongoDB.
+
+Provide real-time incident updates, responder assignment, incident-specific chat, live responder location and notifications.
+
+Provide responder and admin dashboards with analytics and incident history.
+
+Follow a modular backend and reusable frontend architecture with validation and centralized error handling.
+
+Apply security best practices and deploy in a production-like environment.
+
+Understand every part well enough to explain and defend it in interviews.
+
+4. User Roles
+
+Role
+
+Who
+
+Capabilities
+
+USER (Citizen)
+
+Person needing help
+
+Register, login/logout, manage profile, change password; trigger SOS; create manual report with category, description, location and optional image; view active incident, status, assigned responder and responder location; chat with responder; cancel where permitted; view history.
+
+RESPONDER
+
+Verified emergency responder
+
+Login; set availability (ONLINE / OFFLINE / BUSY); view incoming incidents, location and details; accept or decline an incident; update status; chat with the user; share live location; mark resolved; view completed incidents.
+
+ADMIN
+
+System controller
+
+Login; manage and suspend users and responders; verify responders; view all incidents and history; monitor active incidents; assign and reassign responders; manage categories; view analytics and system activity.
+
+
+
+Role rules [Decision]: the client can never send a role. Public registration always creates a USER. Responders register through a separate flow and stay unverified until an admin verifies them. The first admin is created by a seed script, not through the UI.
+
+5. Emergency Categories and Reporting
+
+Categories: Medical, Fire, Accident, Crime/Security, Natural Disaster, Missing Person, Other. Admins may eventually manage them dynamically (stretch).
+
+
+
+Emergency SOS
+
+Manual Report
+
+Goal
+
+Help as fast as possible
+
+Detailed, structured report
+
+Input
+
+One press plus automatic location
+
+Category, description, location, optional image, optional structured questions
+
+Priority
+
+High by default
+
+Decided by backend rules
+
+Flow
+
+Press SOS, get location, create incident, notify responders
+
+Open form, select type, describe, capture location, upload evidence, submit, store, notify
+
+Why
+
+Someone in danger should not fill a long form
+
+Gives responders more context
+
+
+
+SOS fallback: if location permission is denied or times out, the SOS still creates the incident, flags "location unavailable", and prompts for manual address entry so help is never blocked by a permission dialog.
+
+6. Incident Lifecycle (State Machine)
+
+An emergency is a full Incident entity with a lifecycle, not an "alert = true" flag. This is the central concept of the project and a strong interview topic: "How did you design the incident state machine?"
+
+PENDING -> ASSIGNED -> ACCEPTED -> IN_PROGRESS -> RESOLVED
+
+ 
+
+Side exits:  CANCELLED (by user or admin)   REJECTED (by admin)
+
+
+
+From
+
+To
+
+Who / trigger
+
+Rule
+
+(new)
+
+PENDING
+
+System
+
+Created after validation; severity computed by backend.
+
+PENDING
+
+ASSIGNED
+
+Admin (or auto-assign, stretch)
+
+Responder must be verified and ONLINE.
+
+PENDING
+
+ACCEPTED
+
+Responder self-claims
+
+Atomic update so only one responder wins.
+
+ASSIGNED
+
+ACCEPTED
+
+Assigned responder
+
+Only the assigned responder may accept.
+
+ASSIGNED
+
+PENDING
+
+Responder declines, timeout, or admin reassigns
+
+Responder added to declinedBy; incident returns to the pool.
+
+ACCEPTED
+
+IN_PROGRESS
+
+Responder
+
+Responder status becomes BUSY.
+
+IN_PROGRESS
+
+RESOLVED
+
+Responder or admin
+
+resolvedAt set; responder returns to ONLINE.
+
+PENDING / ASSIGNED / ACCEPTED
+
+CANCELLED
+
+User (before IN_PROGRESS) or admin
+
+Reason recorded; responder freed.
+
+PENDING
+
+REJECTED
+
+Admin
+
+For invalid, duplicate or false reports.
+
+
+
+RESOLVED, CANCELLED and REJECTED are terminal. Every transition is validated on the backend, stamped into a statusHistory array (status, changedBy, time, note), and broadcast over Socket.IO.
+
+Concurrency rule: claiming uses one conditional update, for example findOneAndUpdate({ _id, status: "PENDING" }, { status: "ACCEPTED", assignedResponder }). If it returns null, someone else got there first and the responder sees "already taken".
+
+7. Severity System
+
+Levels: LOW, MEDIUM, HIGH, CRITICAL. Severity is never accepted from the frontend. The client only sends inputs (category, SOS flag, checklist answers); the backend maps them to a severity. Admins may override with an audit entry.
+
+Situation
+
+Proposed severity
+
+SOS
+
+HIGH; CRITICAL if a life-threat indicator is present
+
+Medical (manual)
+
+Rule-based from checklist answers (for example not breathing, unconscious, heavy bleeding gives CRITICAL; otherwise HIGH or MEDIUM)
+
+Fire, Natural Disaster
+
+HIGH
+
+Crime / Security
+
+HIGH if "in danger now" is selected, otherwise MEDIUM
+
+Accident
+
+MEDIUM; HIGH if injuries are reported
+
+Missing Person, Other
+
+MEDIUM (default)
+
+
+
+These are starting rules to refine in Phase 1. Later, AI may suggest a classification, but the core emergency workflow is deterministic and AI is an enhancement, not a dependency. Interview line: "If the AI service is down, emergencies still work."
+
+8. Location and Maps
+
+Browser Geolocation API -> lat/lng -> React -> REST API -> MongoDB (GeoJSON Point)
+
+
+
+Storage: location is a GeoJSON Point { type: "Point", coordinates: [lng, lat] } (note the longitude-first order) with a 2dsphere index. This enables $near / $geoNear queries for nearby responders within a radius.
+
+Map (React Leaflet): user marker, responder marker, incident marker, severity-colored markers, selected incident, auto-centering, live responder movement. Route and distance are a stretch item.
+
+Live responder location: while handling an active incident, the responder device sends periodic updates (throttled, for example every 5 to 10 seconds) through Socket.IO to the incident room, so the user sees the responder approach. Sharing starts on ACCEPTED and stops on RESOLVED or CANCELLED.
+
+Note: the Geolocation API requires HTTPS in production (localhost is exempt).
+
+9. Real-Time Architecture
+
+CrisisConnect deliberately uses both REST and WebSockets. Interview explanation: "I use REST for request-response operations and Socket.IO for events where clients need updates without polling."
+
+REST handles
+
+Socket.IO handles
+
+Register, login, profile updates, creating incidents, retrieving incidents and history, admin operations
+
+New incident, responder acceptance, status changes, chat messages, responder location, notifications
+
+
+
+Event catalogue (proposed)
+
+Event
+
+Direction
+
+Purpose
+
+incident:new
+
+Server to responders / admins
+
+A new incident is available
+
+incident:updated
+
+Server to incident room
+
+Status, assignment or severity changed
+
+incident:join
+
+Client to server
+
+Join an incident room (membership verified first)
+
+chat:send / chat:message
+
+Client to server / server to room
+
+Send and receive incident chat
+
+responder:location
+
+Client to server, then to room
+
+Live responder position
+
+notification:new
+
+Server to a user room
+
+In-app notification
+
+
+
+Rules
+
+Socket authentication: the JWT is verified in the connection handshake; unauthenticated sockets are rejected.
+
+Rooms: one room per incident (incident:<id>), plus per-user rooms (user:<id>) and a responders:online room. A socket may join an incident room only if it is the creator, the assigned responder or an admin.
+
+Reconnect strategy: sockets can drop on mobile networks, so on reconnect the client re-fetches current incident state and missed messages over REST. Socket events are hints; the database is the source of truth.
+
+Disconnect handling: a responder who disconnects is marked OFFLINE after a grace period.
+
+Scaling note: a single Socket.IO server is fine for this project; scaling to multiple instances would need a Redis adapter (future scope).
+
+10. Incident-Specific Chat and Notifications
+
+Incident #1001
+
+  |-- User
+
+  |-- Assigned Responder
+
+  `-- Messages (user -> responder, responder -> user, ...)
+
+
+
+Each incident has its own chat room instead of one global chat. Messages carry message ID, incident ID, sender ID, text, timestamp and read status, and are persisted in MongoDB. Chat opens when a responder is assigned or accepts, and becomes read-only after the incident is closed. History is fetched over REST and authorized by incident participation.
+
+Notifications are in-app, delivered through Socket.IO and persisted in MongoDB with read/unread state. Examples: "Responder Rahul accepted your emergency" (user), "New high-priority incident reported nearby" (responder), "Your incident is now In Progress" (user), "Critical incident requires assignment" (admin). SMS and email are out of scope for the first version.
+
+11. Responder Assignment and Availability
+
+Incident created -> find ONLINE verified responders (within radius)
+
+  -> show incident to them -> one accepts (atomic claim)
+
+  -> incident assigned -> others no longer see it -> user notified
+
+
+
+Availability
+
+Meaning
+
+ONLINE
+
+Can receive new incidents
+
+BUSY
+
+Currently handling an incident
+
+OFFLINE
+
+Receives nothing
+
+
+
+Nearby search: start with a radius (for example 5 km); if no responder accepts within a set time, widen the radius and alert admins. A smarter version (stretch) may consider distance, severity and specialization. If nobody is available, the incident stays PENDING and admins are notified.
+
+12. Admin Dashboard and Analytics
+
+Live metrics: total users, total responders, active incidents, critical incidents, available responders, resolved today, and a recent-incidents list (incident number, category, severity).
+
+Analytics (stretch beyond the basic counts): incidents by category, severity and status; daily and weekly counts; average response time (created to accepted); average resolution time (created to resolved); responder activity. MongoDB aggregation pipelines are the natural implementation and a good interview topic.
+
+13. Database Design (MongoDB + Mongoose)
+
+Collections: users, incidents, messages, notifications, plus a small counters collection for incident numbers. Final schemas are settled in Phase 3.
+
+User
+
+Field
+
+Notes
+
+_id, name, email, phone
+
+email has a unique index
+
+password
+
+bcrypt hash; select: false so it never leaves the database by accident
+
+role
+
+USER | RESPONDER | ADMIN (set by server only)
+
+isActive
+
+false when suspended
+
+responderProfile (RESPONDER only)
+
+verificationStatus (PENDING / VERIFIED / REJECTED), availability (ONLINE / OFFLINE / BUSY), specialization[], currentLocation (GeoJSON Point), lastLocationAt
+
+createdAt, updatedAt
+
+timestamps
+
+Incident
+
+Field
+
+Notes
+
+_id, incidentNumber
+
+human-friendly number generated from the counters collection
+
+createdBy, assignedResponder
+
+references to users
+
+category, description, isSOS
+
+category from the fixed list
+
+severity, status
+
+both set and validated by the backend
+
+location
+
+GeoJSON Point with 2dsphere index; optional address text
+
+statusHistory[]
+
+status, changedBy, at, note
+
+declinedBy[]
+
+responders who declined, so they are not re-offered the same incident
+
+evidence
+
+image URL(s) (stretch)
+
+cancelReason
+
+when cancelled or rejected
+
+createdAt, assignedAt, resolvedAt, updatedAt
+
+timestamps used for analytics
+
+Message and Notification
+
+Collection
+
+Fields
+
+Index
+
+messages
+
+_id, incidentId, senderId, text, createdAt, readAt
+
+incidentId + createdAt
+
+notifications
+
+_id, userId, type, title, message, relatedIncident, isRead, createdAt
+
+userId + isRead + createdAt
+
+
+
+Other indexes: incidents on (status, severity, createdAt), createdBy and assignedResponder. Responder trail (stretch): an optional locations collection with a TTL index so old points expire automatically.
+
+14. Backend Architecture
+
+Node.js, Express.js, MongoDB, Mongoose, Socket.IO, JWT and bcrypt, organized so there is no giant server.js.
+
+backend/
+
+  config/        db.js, env.js
+
+  controllers/   auth, incident, user, admin (+ responder)
+
+  middleware/    auth, role, error, validation, rateLimit
+
+  models/        User, Incident, Message, Notification, Counter
+
+  routes/        auth, incident, user, admin, responder
+
+  services/      incidentService, responderService, notificationService
+
+  sockets/       index (auth), incidentSocket, chatSocket
+
+  utils/         generateToken, error (AppError), apiResponse
+
+  app.js         Express app (no listen)
+
+  server.js      HTTP + Socket.IO bootstrap
+
+
+
+Request flow: Client, Route, Authentication, Authorization, Validation, Controller, Service, Mongoose Model, MongoDB, Response. Controllers stay thin (HTTP in, HTTP out); business rules such as state transitions and severity live in services, which sockets can reuse. Splitting app.js from server.js makes the API testable with Supertest. Be ready to explain why each layer exists.
+
+15. Frontend Architecture and Pages
+
+frontend/src/
+
+  components/  pages/  layouts/  hooks/  context/
+
+  services/ (Axios)  sockets/  utils/  routes/ (protected)  assets/
+
+  App.jsx  main.jsx
+
+
+
+Keep pages, reusable components, API/socket logic and auth state separate rather than putting everything inside components. Styling choice (CSS or Tailwind) must be made before implementation and used consistently.
+
+Area
+
+Routes
+
+Public
+
+/, /login, /register, /about
+
+User
+
+/user/dashboard, /user/report, /user/incidents, /user/incidents/:id, /user/profile
+
+Responder
+
+/responder/dashboard, /responder/incidents, /responder/incidents/:id, /responder/profile
+
+Admin
+
+/admin/dashboard, /admin/users, /admin/responders, /admin/incidents, /admin/analytics
+
+
+
+Add a ProtectedRoute component that checks login and role. Remember that frontend route guards are only for user experience; real security is enforced by the backend.
+
+16. Authentication and Authorization
+
+Register: validate -> check email -> bcrypt hash -> save user (role = USER)
+
+Login:    email + password -> find user -> compare hash -> issue token(s)
+
+Request:  token -> auth middleware -> load user -> role middleware -> controller
+
+
+
+Authentication answers "Who are you?"; authorization answers "What may you do?". USER: create and view own incidents. RESPONDER: view and act on assigned or available incidents. ADMIN: manage users, responders and all incidents. Backend authorization is mandatory.
+
+Token strategy [Decision to discuss in Phase 5]
+
+Option
+
+Pros
+
+Cons
+
+Access JWT in localStorage
+
+Simplest
+
+Readable by any injected script (XSS)
+
+Access JWT in httpOnly cookie
+
+Not readable by JavaScript; logout can clear it
+
+Needs CORS credentials and CSRF thinking (sameSite helps)
+
+Short-lived access token + refresh token in httpOnly cookie (recommended)
+
+Best security trade-off; refresh can be revoked
+
+More code (refresh endpoint, rotation)
+
+
+
+JWTs are stateless, so "logout" means clearing the cookie and revoking the refresh token. Passwords are hashed with bcrypt (never plain text), and sockets reuse the same token for handshake authentication.
+
+17. REST API Map (Initial)
+
+Rows marked NEW were not in the original list. The final specification (request body, parameters, auth, role, responses, status codes, errors) goes into the Design Document.
+
+Method
+
+Endpoint
+
+Role
+
+Purpose
+
+POST
+
+/api/auth/register
+
+Public
+
+Create USER account
+
+POST
+
+/api/auth/login
+
+Public
+
+Login
+
+POST
+
+/api/auth/logout
+
+Any
+
+Logout (clear token)
+
+POST
+
+/api/auth/refresh
+
+Any
+
+NEW: issue a new access token
+
+GET
+
+/api/auth/me
+
+Any
+
+Current user
+
+GET / PATCH
+
+/api/users/me
+
+Any
+
+View and update profile
+
+GET
+
+/api/users/me/incidents
+
+USER
+
+Own incident history
+
+POST
+
+/api/incidents
+
+USER
+
+Create SOS or manual incident
+
+GET
+
+/api/incidents
+
+Role-scoped
+
+List incidents the caller may see (paginated)
+
+GET
+
+/api/incidents/:id
+
+Participant / Admin
+
+Incident detail
+
+PATCH
+
+/api/incidents/:id/status
+
+Responder / Admin
+
+Validated status transition
+
+POST
+
+/api/incidents/:id/assign
+
+Admin
+
+Assign or reassign responder
+
+POST
+
+/api/incidents/:id/cancel
+
+USER / Admin
+
+Cancel with reason
+
+PATCH
+
+/api/incidents/:id/severity
+
+Admin
+
+NEW: override severity (audited)
+
+GET
+
+/api/incidents/:id/messages
+
+Participant
+
+NEW: chat history
+
+PATCH
+
+/api/responders/status
+
+Responder
+
+Set ONLINE / OFFLINE
+
+GET
+
+/api/responders/incidents
+
+Responder
+
+Available and assigned incidents
+
+POST
+
+/api/responders/incidents/:id/accept
+
+Responder
+
+Claim or accept
+
+POST
+
+/api/responders/incidents/:id/decline
+
+Responder
+
+NEW: decline an assignment
+
+GET
+
+/api/notifications
+
+Any
+
+NEW: list notifications
+
+PATCH
+
+/api/notifications/:id/read
+
+Any
+
+NEW: mark read
+
+GET
+
+/api/admin/users, /responders, /incidents, /analytics
+
+Admin
+
+Management and analytics
+
+PATCH
+
+/api/admin/responders/:id/verify
+
+Admin
+
+NEW: verify or reject responder
+
+PATCH
+
+/api/admin/users/:id/status
+
+Admin
+
+NEW: suspend or reactivate
+
+18. Security
+
+Security is part of the design, not an afterthought, and starts in Phase 5.
+
+Passwords and tokens: bcrypt hashing, secure token strategy, secrets only in environment variables.
+
+Access control: role-based authorization plus ownership checks. A user must not be able to PATCH another user's incident by guessing its ID; the same checks apply to chat history and socket events.
+
+Input safety: schema validation on every request (Zod, Joi or express-validator), NoSQL-injection sanitization, request size limits.
+
+HTTP hardening: Helmet, CORS limited to the known client URL, rate limiting on login and SOS creation, and false-alarm abuse handling (admins can suspend repeat offenders).
+
+Uploads: type and size validation, restricted storage, no executable files.
+
+Privacy: location is sensitive. Responder location is shared only with participants of an active incident, sharing stops when the incident closes, and responder phone numbers are not exposed broadly. Define how long incident data is kept.
+
+Errors: secure, consistent responses with no stack traces or internals leaked to the client.
+
+19. Error Handling and Configuration
+
+A centralized error middleware returns one consistent response shape. Error categories: validation, authentication, authorization, not found, duplicate data, database and server errors. A custom AppError class lets services throw meaningful errors; the frontend maps them to friendly messages.
+
+Environment variables (never hardcoded; separate development and production values): MONGO_URI, JWT_SECRET, PORT, CLIENT_URL, API_URL, plus refresh-token secret and image-storage keys if used. Provide a .env.example and keep real .env files out of Git.
+
+20. Non-Functional Requirements (New)
+
+Area
+
+Target
+
+Performance
+
+SOS creation and first responder notification in about 2 seconds under normal load; list endpoints paginated.
+
+Usability
+
+SOS reachable in one or two taps; mobile-responsive layout; clear visual hierarchy for emergency states.
+
+Reliability
+
+No data loss on restart (persistent DB); graceful socket reconnect; REST fallback to restore state.
+
+Security and privacy
+
+As in section 18; least-privilege access to location and contact data.
+
+Maintainability
+
+Layered code, consistent naming, documented APIs, meaningful Git history.
+
+Compatibility
+
+Current Chrome, Edge, Firefox and mobile browsers; HTTPS required for geolocation.
+
+Observability
+
+Request logging and clear server error logs (basic version).
+
+21. Scope Control
+
+Tier
+
+Contents
+
+MVP (build first)
+
+Register/login with RBAC; SOS and manual report; incident lifecycle with validated transitions; responder availability and accept; admin assign and verify; incident history; real-time status events; basic map with incident and user markers.
+
+Core+
+
+Incident chat; live responder location; persisted notifications; admin dashboard counts.
+
+Stretch
+
+Analytics charts; image evidence upload; AI-assisted severity; dynamic category management; auto-assign by distance; route and distance on map; location trail with TTL.
+
+Out of scope (v1)
+
+Mobile app, payments, SMS gateway, complex AI prediction, hospital or government integrations, microservices, Kubernetes, complex cloud architecture.
+
+
+
+The goal is a strong, explainable MERN placement project, not national emergency infrastructure. If time runs short, ship MVP plus Core+ cleanly rather than everything half-done.
+
+22. Technology Stack and Tools
+
+Layer
+
+Technologies
+
+Added in this edition
+
+Frontend
+
+React, Vite, React Router, Axios, Socket.IO Client, React Leaflet, CSS or Tailwind (to decide)
+
+Vitest and React Testing Library
+
+Backend
+
+Node.js, Express.js, Socket.IO, JWT, bcrypt, Mongoose
+
+dotenv, cors, Helmet, express-rate-limit, a validation library, Multer (uploads), cookie-parser
+
+Database
+
+MongoDB, MongoDB Atlas
+
+Image storage service if uploads are built (for example Cloudinary)
+
+Dev tools
+
+Git, GitHub, VS Code, Postman, MongoDB Compass
+
+Jest and Supertest, ESLint, nodemon
+
+Deployment
+
+Decide later based on what is practical
+
+Check that the chosen host supports WebSockets for the backend
+
+
+
+For every technology, document: why chosen, what problem it solves, where it is used, alternatives, and why alternatives were not chosen. This is high-value interview material.
+
+23. Documentation Plan
+
+Instead of 21 separate files, group the material into focused documents. The numbered .md files are kept as sections inside them, so nothing is lost.
+
+Document
+
+Contains (original file numbers)
+
+Project Requirement Document
+
+01 Project Overview, 02 Requirements (functional, non-functional, constraints), 03 Feature Specification (purpose, user, input, processing, output, DB, API, events, edge cases)
+
+Design Document
+
+06 Database Design, 07 API Documentation, 10 Authentication, 13 UI/UX Design, 14 Security
+
+Architecture Document
+
+04 System Architecture, 08 Backend Architecture, 09 Frontend Architecture, 11 Real-Time Architecture, 12 Location and Maps
+
+Tools Requirement Document
+
+05 Technology Stack, 16 Deployment, 17 Git and Version Control
+
+Phase Document
+
+Development phases with status, 15 Testing (plans and test cases), 20 Project Changelog
+
+brain.md
+
+Running project memory: decisions log, conventions, current status, open questions, 18 Troubleshooting (problem, error, cause, diagnosis, fix, why it works, prevention)
+
+Interview and Code Guide
+
+19 Interview Preparation, 21 Code Explanation (per file: purpose, functions, parameters, validation, DB operations, errors, related API and UI)
+
+24. Development Phases
+
+Phase
+
+Focus
+
+Key deliverables
+
+0
+
+Existing project analysis
+
+Notes on old code, reusable ideas, limitations
+
+1
+
+Requirements and feature specification
+
+Problem, objectives, roles, functional and non-functional requirements, scope tiers
+
+2
+
+System design
+
+Architecture, data flow, REST and Socket.IO contracts
+
+3
+
+Database design
+
+Schemas, relationships, indexes, validation
+
+4
+
+Backend foundation
+
+Node/Express setup, MongoDB connection, structure, env config, base error handling
+
+5
+
+Authentication and authorization
+
+Register, login, hashing, tokens, middleware, protected routes (with validation and rate limiting from here)
+
+6
+
+Incident management
+
+Create, SOS, retrieve, status transitions, assignment, cancel, history
+
+7
+
+React frontend
+
+Layout, routing, auth pages, three dashboards, reusable components
+
+8
+
+Real-time communication
+
+Socket auth, incident events, rooms, responder notifications
+
+9
+
+Maps and location
+
+Geolocation, markers, responder tracking, live updates
+
+10
+
+Chat and notifications
+
+Incident chat, persisted notifications, read/unread
+
+11
+
+Admin and analytics
+
+User and responder management, monitoring, assignment, statistics
+
+12
+
+Security hardening
+
+Review of validation, ownership checks, CORS, uploads, rate limits
+
+13
+
+Testing
+
+API, frontend, integration, socket, security and end-to-end tests
+
+14
+
+Deployment
+
+Frontend, backend, Atlas, production URLs, CORS, env variables
+
+15
+
+Documentation
+
+Finalize the seven documents
+
+16
+
+Interview preparation
+
+Explanations, bugs and solutions, topic question banks
+
+
+
+Manual end-to-end test scenario: user creates incident, responder receives it, responder accepts, user is notified, responder location updates, user sees location, responder resolves, incident appears in history. Git: feature branches, meaningful commits (for example "Add JWT middleware", "Implement incident creation"), .gitignore for secrets, and pull requests even when working alone.
+
+25. Interview Preparation
+
+30-second explanation (draft)
+
+"CrisisConnect is a real-time emergency response platform built on the MERN stack. Users can trigger an SOS or report an incident with their location; nearby verified responders are notified over Socket.IO, one accepts, and the user then tracks the responder and chats with them. Admins monitor everything. The core workflow is a backend-controlled state machine with role-based access."
+
+1-minute explanation (draft)
+
+Add: the problem (fragmented communication in emergencies), why v2 exists (v1 had no database, no real auth, global chat), the layered architecture (route, middleware, controller, service, Mongoose), REST for request-response versus Socket.IO for push updates, and one hard problem you solved (for example the atomic claim that stops two responders accepting the same incident).
+
+Topics to be ready for
+
+Area
+
+Be able to explain
+
+React
+
+Components, props, state, hooks, useEffect, routing, context, protected routes, API integration
+
+Node and Express
+
+Event loop, async programming, modules, middleware, controllers, error handling, REST
+
+MongoDB
+
+Documents, collections, ObjectId, Mongoose schemas, references, indexes (including 2dsphere), queries, aggregation
+
+Auth and security
+
+JWT, bcrypt, authentication vs authorization, RBAC, token storage trade-offs, CORS, validation, ownership checks
+
+Socket.IO
+
+WebSockets vs polling, events, rooms, handshake auth, reconnect and disconnect handling
+
+Architecture
+
+Client-server, REST plus real-time, layered backend, separation of concerns, state machine design
+
+26. Development Philosophy
+
+The point is not just working software but understanding. Follow: UNDERSTAND, DESIGN, IMPLEMENT, RUN, TEST, DEBUG, EXPLAIN, DOCUMENT, rather than copying generated code and moving on. Be able to trace any feature end to end:
+
+User action -> React component -> API / Socket -> Express route -> middleware
+
+  -> controller -> service -> Mongoose -> MongoDB -> response / event
+
+  -> React state -> UI update
+
+27. Target Architecture and Final Definition
+
+React Frontend ---- Axios ----------> Express REST API  --+
+
+      |                                                   +--> Middleware (auth, role, validation)
+
+      +--- Socket.IO Client <-> Node.js + Socket.IO  -----+        |
+
+                                                              Controllers
+
+                                                                   |
+
+                                                               Services
+
+                                                                   |
+
+                                                       Mongoose -> MongoDB Atlas
+
+
+
+External integrations such as maps or optional AI connect through dedicated services and never become dependencies of the core emergency workflow.
+
+CrisisConnect is a MERN-based real-time emergency response and incident management platform that connects citizens with emergency responders through secure authentication, SOS and manual incident reporting, location sharing, responder assignment, live incident tracking, incident-specific communication, notifications and administrative monitoring.
+
+28. Open Decisions
+
+Decision
+
+Options / recommendation
+
+Settle in
+
+Initial state
+
+PENDING only (recommended) or keep CREATED
+
+Phase 1
+
+Assignment model
+
+Self-claim plus admin assign (recommended), or auto-assign
+
+Phase 2
+
+Token storage
+
+Access token plus httpOnly refresh cookie (recommended)
+
+Phase 5
+
+Validation library
+
+Zod, Joi or express-validator
+
+Phase 4
+
+Styling
+
+Tailwind or plain CSS
+
+Before Phase 7
+
+Image storage
+
+Cloudinary or similar (only if uploads are built)
+
+Phase 6
+
+Responder location history
+
+Latest only (recommended) or TTL trail
+
+Phase 3
+
+Search radius and timeout
+
+For example 5 km, widen after a timeout
+
+Phase 6
+
+Hosting
+
+Choose services that support WebSockets
+
+Phase 14
+

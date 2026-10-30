@@ -1,0 +1,1470 @@
+CrisisConnect
+
+Master Build Plan
+
+All phases, start to finish, with copy-ready commands
+
+Real-Time Emergency Response and Incident Management Platform
+
+Full-Stack MERN Application
+
+Version 1.0 | Paste into a new chat or any AI coding tool to build the project phase by phase
+
+
+
+How to Use This Document
+
+Step
+
+What to do
+
+1
+
+Open a new chat (or tool). Paste Part 1: Project Context Block first. Do this at the start of every new chat; the tool has no memory of earlier chats.
+
+2
+
+Open the phase you are on in Part 3. Copy its Command box and paste it. If the command says "Also paste", add those Reference blocks from Part 4.
+
+3
+
+The tool returns files with paths and code. Create them, run the commands it gives, and run the tests. Check the phase's Done when list.
+
+4
+
+Fix problems inside the same chat. When the phase passes, commit to Git, update brain.md (status, decisions, bugs), and move to the next phase.
+
+5
+
+Never skip ahead. Each phase assumes the earlier ones are finished and working.
+
+
+
+Tips for different tools
+
+Normal chat tools: paste the Context Block plus one phase command per message. Paste your existing code files if the tool needs to see them.
+
+Coding agents (for example Claude Code, Cursor, Copilot agent mode): save Part 1 as a rules or instructions file in the repository (for example CLAUDE.md or .cursorrules) so it is read automatically; then give only the phase command.
+
+If the answer is too long: reply "continue" or ask for the next file; or split a phase by asking for "backend part only" then "frontend part only".
+
+Always ask the tool to explain in simple terms why each part exists. This is what lets you defend the project in interviews.
+
+Keep this document updated when you change a decision (for example styling choice or hosting). The Context Block is the single source of truth.
+
+Part 1: Project Context Block (paste first, every time)
+
+PROJECT: CrisisConnect (the name is exactly "CrisisConnect"; never add "2.0").
+
+WHAT: A MERN real-time emergency response and incident management platform.
+
+Citizens report emergencies (SOS or detailed report); verified responders are alerted
+
+in real time; one responder accepts; user and responder share live status, chat and
+
+responder location until resolved; admins verify responders, assign incidents, see
+
+analytics. It is a placement project: I must understand and explain every line.
+
+ 
+
+ROLES: USER (citizen), RESPONDER (verified), ADMIN.
+
+CATEGORIES: MEDICAL, FIRE, ACCIDENT, CRIME_SECURITY, NATURAL_DISASTER,
+
+            MISSING_PERSON, OTHER.   SEVERITY: LOW, MEDIUM, HIGH, CRITICAL.
+
+STATUS: PENDING -> ASSIGNED -> ACCEPTED -> IN_PROGRESS -> RESOLVED;
+
+        side exits CANCELLED, REJECTED. Terminal: RESOLVED, CANCELLED, REJECTED.
+
+ 
+
+STACK: MongoDB Atlas + Mongoose, Express, React (Vite), Node.js (ES modules),
+
+  Socket.IO, JWT (httpOnly cookies), bcrypt, Zod (validation), Tailwind CSS,
+
+  React Router, Axios, Leaflet + React Leaflet (OpenStreetMap), Recharts,
+
+  Jest + Supertest + mongodb-memory-server, Vitest + React Testing Library,
+
+  helmet, cors, cookie-parser, express-rate-limit, dotenv, morgan + pino,
+
+  ESLint + Prettier + nodemon, Git/GitHub.
+
+ 
+
+ARCHITECTURE: layered monolith. routes -> middleware (protect, authorize, validate)
+
+  -> controllers (thin) -> services (ALL business rules) -> Mongoose models.
+
+  Socket handlers also call the same services. app.js builds the Express app (no
+
+  listen); server.js starts HTTP + Socket.IO + DB. REST for commands, Socket.IO for
+
+  pushing events. Database is the source of truth; after reconnect re-fetch via REST.
+
+ 
+
+GROUND RULES:
+
+1. Backend decides role, severity, status transitions, ownership. Never trust the
+
+   client for these. Public register always creates USER; admin made by seed script.
+
+2. Every status change goes through ONE function transitionIncident using an
+
+   allowed-transitions map and a conditional update (atomic). Claim = findOneAndUpdate
+
+   with { _id, status: "PENDING" }; null result => 409 ALREADY_TAKEN.
+
+3. Ownership checks in services. Another user's incident returns 404 (not 403).
+
+4. Never return password, refreshTokenHash or stack traces. password select:false.
+
+5. Tokens: access (~15 min) + refresh (~7 days) in httpOnly cookies; refresh hash
+
+   stored on the user; rotation on refresh; logout clears cookies and the hash.
+
+6. GeoJSON order is [lng, lat]; Leaflet order is [lat, lng]. Convert in one utility.
+
+7. AI features are optional and never required for the core flow.
+
+8. Scope tiers: MVP first, then Core+, then Stretch. No features outside the phase.
+
+ 
+
+API ENVELOPE: success { success:true, message, data }
+
+  error { success:false, message, code, errors? }
+
+ERROR CODES: VALIDATION_ERROR 400, UNAUTHENTICATED 401, TOKEN_EXPIRED 401,
+
+  FORBIDDEN 403, ACCOUNT_SUSPENDED 403, NOT_FOUND 404, DUPLICATE 409,
+
+  INVALID_TRANSITION 409, ALREADY_TAKEN 409, RESPONDER_UNAVAILABLE 409,
+
+  RATE_LIMITED 429, SERVER_ERROR 500.
+
+LISTS: ?page=1&limit=20 (max 100) -> data { items, page, limit, total, totalPages }.
+
+ 
+
+BACKEND FOLDERS (backend/src): config, constants, models, validators, middleware,
+
+  routes, controllers, services, sockets, utils, app.js, server.js; plus scripts/
+
+  (seedAdmin.js) and tests/.
+
+FRONTEND FOLDERS (frontend/src): components (common, layout, incidents, map, chat,
+
+  admin), pages (public, user, responder, admin), layouts, context (AuthContext,
+
+  SocketContext), hooks, services (api.js + per-resource), sockets, routes
+
+  (ProtectedRoute, RoleRoute), constants, utils.
+
+ 
+
+ENV (backend): NODE_ENV, PORT, MONGO_URI, JWT_ACCESS_SECRET, JWT_REFRESH_SECRET,
+
+  ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, CLIENT_URL, COOKIE_SAMESITE, COOKIE_SECURE,
+
+  ALERT_RADIUS_KM, CLAIM_TIMEOUT_SEC.  ENV (frontend): VITE_API_URL, VITE_SOCKET_URL.
+
+ 
+
+HOW TO ANSWER: give every file with its full path and complete code; then the exact
+
+commands to run and test; then tests to add; then a short plain-language explanation
+
+of why each piece exists; then notes I should add to brain.md (decisions, pitfalls).
+
+Ask me if something is ambiguous. Do not invent features. Keep code simple and
+
+readable (no clever tricks); I am a student who must explain it in interviews.
+
+
+
+Note
+
+Defaults chosen in this block: ES modules, Zod, Tailwind, deploy as a single service (Express serves the React build). If you decide differently, edit this block once and every later command follows.
+
+Part 2: Phase Map
+
+Phase
+
+Name
+
+Result
+
+Needs
+
+Effort (focused days)
+
+0
+
+Existing project analysis
+
+Limitations and reusable ideas
+
+None
+
+Done
+
+1
+
+Requirements
+
+PRD
+
+0
+
+Done
+
+2
+
+Design and architecture
+
+Design, architecture, tools, testing and API docs
+
+1
+
+Done
+
+3
+
+Database design
+
+Atlas, repo, models, indexes
+
+2
+
+2 to 3
+
+4
+
+Backend foundation
+
+Tested Express skeleton
+
+3
+
+2 to 3
+
+5
+
+Authentication and authorization
+
+Secure auth API
+
+4
+
+4 to 6
+
+6
+
+Incident management
+
+Full incident API (MVP backend)
+
+5
+
+6 to 9
+
+7
+
+React frontend
+
+Screens for all roles
+
+6
+
+7 to 10
+
+8
+
+Real-time communication
+
+Live alerts and updates (MVP)
+
+6, 7
+
+4 to 6
+
+9
+
+Maps and location
+
+Maps, live responder location
+
+8
+
+4 to 6
+
+10
+
+Chat and notifications
+
+Incident chat, notifications
+
+8, 9
+
+3 to 5
+
+11
+
+Admin and analytics
+
+Dashboard, tools, charts
+
+6 to 10
+
+4 to 6
+
+12
+
+Security hardening
+
+Audited, fixed, tested
+
+5 to 11
+
+3 to 4
+
+13
+
+Testing
+
+Full suite, E2E, release candidate
+
+5 to 12
+
+4 to 6
+
+14
+
+Deployment
+
+Live URL
+
+13
+
+2 to 4
+
+15
+
+Documentation
+
+README, as-built docs, final guides
+
+14
+
+3 to 5
+
+16
+
+Interview preparation
+
+Explanations, stories, resume bullets
+
+15
+
+3 to 5
+
+
+
+Milestones: after Phase 6 the backend works in Postman; after Phase 8 you have a usable MVP; after Phase 11 Core+ is complete; after Phase 13 a release candidate; after Phase 14 it is live. If time is short, do Phases 3 to 8 and 12 to 16 first (MVP path), then add 9 to 11.
+
+Part 3: Phases and Commands
+
+Phases 0 to 2: Analysis, Requirements, Design (already done)
+
+These produced your documents: PRD, Design Document, Architecture and Tools, Testing and API Reference, brain.md and the Phase Document. If you ever need another tool to regenerate or extend them, use this command:
+
+Using the Project Context Block above, write the <PRD | Design Document |
+
+Architecture and Tools | Testing and API Reference | Phase Document> for CrisisConnect
+
+as a professional Word document. Include: <list the sections you want>. Use tables for
+
+requirements, endpoints and test cases; give every requirement an ID (FR-AUTH-01 style);
+
+include business rules, non-functional requirements, acceptance criteria and a
+
+one-page revision sheet. Do not add features outside the scope tiers.
+
+
+
+Phase 3: Database Design
+
+Goal
+
+Atlas database ready, repository created, Mongoose models and indexes verified.
+
+Build
+
+- Atlas cluster, DB user, IP allowlist; Compass connected; GitHub repo with README, .gitignore, docs/
+
+- constants: roles, statuses, categories, transitions map, severity rules
+
+- models: User, Incident, Message, Notification, Counter (types, enums, defaults, validation, select:false)
+
+- indexes: email unique, incidentNumber unique, compound indexes, two 2dsphere indexes
+
+- throwaway script: insert sample data, run $near with explain(); parallel counter test
+
+Rules
+
+Reference A defines the fields. Coordinates are [lng, lat]. Never commit the Atlas connection string.
+
+Also paste
+
+Reference A (data model), Reference B (lifecycle and severity)
+
+Done when
+
+- All five models load; indexes exist in Compass
+
+- $near returns nearest responders using the index
+
+- 20 parallel counter increments give 20 unique numbers
+
+
+
+Command (copy this box)
+
+PHASE 3: Database design. Use the Project Context Block and Reference A and B.
+
+Do: (1) give me step-by-step Atlas and GitHub repository setup (what to click, what
+
+to copy, what never to commit); (2) create backend/src/constants (roles, statuses,
+
+categories, transitions, severityRules); (3) create the five Mongoose models exactly
+
+as in Reference A with validation, enums, defaults, select:false on secrets, and all
+
+indexes; (4) write scripts/verifyModels.js that connects, inserts sample users and
+
+incidents with GeoJSON, runs a $near query with explain(), and tests the counter with
+
+20 parallel increments. Explain embed vs reference choices and GeoJSON order.
+
+
+
+Phase 4: Backend Foundation
+
+Goal
+
+A clean, tested Express skeleton that later features plug into.
+
+Build
+
+- package.json scripts (dev, start, test, lint), ESLint, Prettier, nodemon, .env.example
+
+- config/env.js (validate variables, fail fast), config/db.js
+
+- app.js with helmet, cors (exact origin, credentials), json limit, cookie-parser, logger, notFound, errorMiddleware
+
+- utils: AppError, asyncHandler, apiResponse, logger; validate(schema) middleware with Zod
+
+- server.js; GET /api/health; seedAdmin.js skeleton
+
+- Jest + Supertest + mongodb-memory-server with first tests
+
+Rules
+
+app.js never calls listen. Middleware order matters (error handler last). Standard envelopes everywhere.
+
+Also paste
+
+Nothing extra
+
+Done when
+
+- npm run dev starts; /api/health returns the success envelope
+
+- npm test is green (health, 404, AppError, validation error)
+
+- Production mode never returns stack traces
+
+
+
+Command (copy this box)
+
+PHASE 4: Backend foundation. Use the Project Context Block.
+
+Build the Express skeleton in backend/ with ES modules following the folder layout:
+
+package.json scripts, ESLint/Prettier, .env.example, config/env.js (Zod-validated,
+
+fail fast), config/db.js, utils (AppError, asyncHandler, apiResponse, logger),
+
+middleware (validate, errorMiddleware, notFound), app.js (helmet, cors with
+
+credentials and exact CLIENT_URL, json limit, cookie-parser, morgan, notFound,
+
+errorMiddleware in the right order), server.js, GET /api/health. Set up Jest,
+
+Supertest and mongodb-memory-server and write tests for health, 404 envelope, thrown
+
+AppError and validation error. Explain middleware order and why app.js/server.js are
+
+separate.
+
+
+
+Phase 5: Authentication and Authorization
+
+Goal
+
+Secure registration, login, refresh, logout, roles and rate limiting.
+
+Build
+
+- validators (Zod) for register, login, profile, password change
+
+- authService: register (role forced USER), registerResponder (PENDING, OFFLINE), login (generic error, reject inactive), refresh with rotation, logout
+
+- token helpers and cookie options by environment; verifyToken reusable for sockets
+
+- protect (loads user, rejects inactive) and authorize(...roles) middleware
+
+- /auth/me, user profile and change password endpoints; rate limit login/register
+
+- scripts/seedAdmin.js; tests
+
+Rules
+
+Never return passwords or hashes. Same error for wrong email and wrong password. Access and refresh tokens use different secrets.
+
+Also paste
+
+Reference C (API list: auth and users sections)
+
+Done when
+
+- Register, login, refresh, logout, /me work with cookies in Postman
+
+- USER cannot call admin routes; suspended user blocked at once
+
+- Logout makes the old refresh cookie useless
+
+- Auth and related security tests pass
+
+
+
+Command (copy this box)
+
+PHASE 5: Authentication and authorization. Use the Project Context Block and
+
+Reference C (auth and users endpoints).
+
+Implement: Zod validators; authService; bcrypt hashing; access (15m) and refresh (7d)
+
+tokens in httpOnly cookies (Secure/SameSite from env); refresh rotation with the
+
+refresh-token hash stored on the user; logout; protect and authorize middleware;
+
+POST /auth/register, /auth/register-responder, /auth/login, /auth/refresh,
+
+/auth/logout, GET /auth/me, GET/PATCH /users/me, PATCH /users/me/password;
+
+rate limit login and register; scripts/seedAdmin.js. Write Jest+Supertest tests: valid
+
+and duplicate register, role injection ignored, wrong password, suspended login,
+
+expired token, refresh after logout fails, role middleware, password never leaked.
+
+Explain JWT, bcrypt, cookie flags and why refresh tokens are hashed and rotated.
+
+
+
+Phase 6: Incident Management
+
+Goal
+
+The core backend: incidents, severity, state machine, exclusive claim, assignment, cancellation, responder availability.
+
+Build
+
+- severityService (rule table) with unit tests; incident numbers from counters (CC-1001)
+
+- createIncident (SOS and manual, missing-location fallback); role-scoped list with filters and pagination; getIncident with ownership (404 for outsiders)
+
+- transitions map + transitionIncident (actor guard, conditional update, statusHistory push, responder BUSY/ONLINE side effects)
+
+- claim (atomic), admin assign/reassign, decline, cancel, reject, severity override
+
+- responder endpoints: availability, location, scoped lists; findEligibleResponders ($near, excludes BUSY and declined)
+
+- notificationService (records only for now)
+
+Rules
+
+Controllers stay thin. Client never sends severity, status, createdBy, incidentNumber. Only the transition function changes status.
+
+Also paste
+
+Reference A, B, C (incident, responder, admin sections)
+
+Done when
+
+- Full lifecycle works in Postman
+
+- Parallel claim test: exactly one 200 and one 409 (run 20 times)
+
+- Every transition writes a statusHistory entry
+
+- Unit tests cover the whole transition matrix and every severity rule
+
+
+
+Command (copy this box)
+
+PHASE 6: Incident management. Use the Project Context Block and Reference A, B, C.
+
+Implement in the service layer first, then controllers and routes: severityService;
+
+counter-based incidentNumber; createIncident; role-scoped listIncidents with filters
+
+and pagination; getIncident with ownership check (404 for non-participants);
+
+transitions map and transitionIncident; claimIncident using findOneAndUpdate on
+
+status; admin assign/reassign; decline; cancel; reject; severity override; responder
+
+availability, location and scoped list endpoints; findEligibleResponders with $near.
+
+Write tests: SOS/manual create, client-sent severity ignored, IDOR returns 404,
+
+transition matrix, illegal transitions 409, parallel claim with Promise.all, cancel
+
+rules, decline not re-offered. Explain the state machine and atomic claim simply.
+
+
+
+Phase 7: React Frontend
+
+Goal
+
+Usable screens for USER, RESPONDER and ADMIN on the existing API (manual refresh; live updates come in Phase 8).
+
+Build
+
+- Vite + React + Tailwind with design tokens (Reference E); Axios instance with withCredentials and refresh-and-retry interceptor
+
+- AuthContext, AppRoutes, ProtectedRoute, RoleRoute, role layouts
+
+- common components (Button, Input, Modal, ConfirmDialog, Toast, Spinner, Skeleton, EmptyState, SeverityBadge, StatusBadge)
+
+- auth pages; user dashboard with SOS button; report form; incident list and details
+
+- responder dashboard (availability, available feed, Accept/Decline) and incident details with status actions
+
+- admin pages: users, responders (verify), incidents (filters, assign), dashboard basics
+
+- loading, empty and error states; responsive; basic component tests
+
+Rules
+
+Components take props; data fetching in hooks and services. Severity shown as colour AND text. Route guards are UX only.
+
+Also paste
+
+Reference C (API), Reference E (pages and design tokens)
+
+Done when
+
+- Each role completes its MVP tasks in the UI
+
+- Every page has loading, empty and error states
+
+- Works at 360 px width
+
+
+
+Command (copy this box)
+
+PHASE 7: React frontend. Use the Project Context Block and Reference C and E.
+
+Create frontend/ with Vite, React, React Router, Axios and Tailwind. Build: design
+
+tokens; services/api.js (withCredentials, refresh-and-retry on TOKEN_EXPIRED,
+
+getErrorMessage); AuthContext (load /auth/me); ProtectedRoute and RoleRoute; layouts
+
+per role (bottom tab bar on mobile); common components; auth pages; user dashboard
+
+with a large SOS button (confirm window), report form, incident list and details with
+
+status timeline; responder dashboard and incident details; admin users, responders,
+
+incidents and basic dashboard pages. Use hooks (useIncident, useIncidents) for data.
+
+Add loading/empty/error states and tests for ProtectedRoute, forms and badges.
+
+Explain props, state, useEffect cleanup, context and why route guards are not security.
+
+
+
+Phase 8: Real-Time Communication
+
+Goal
+
+Authenticated sockets, rooms, live alerts and live status updates.
+
+Build
+
+- Socket.IO on the same HTTP server; handshake auth with the same verifyToken (reject invalid or suspended)
+
+- rooms: user:<id>, responders:online, admins, incident:<id> (join only after participant check)
+
+- realtime emitter helper; wire incident:new, incident:updated, incident:taken, notification:new into services
+
+- responder disconnect grace period then OFFLINE
+
+- frontend SocketContext (one socket per session), subscription hooks with cleanup, ConnectionIndicator, re-fetch and rejoin on reconnect
+
+- socket tests with socket.io-client
+
+Rules
+
+Events are hints; REST re-fetch restores truth. Identity comes from the socket, never from payloads. Handlers are idempotent (replace by id).
+
+Also paste
+
+Reference D (socket events)
+
+Done when
+
+- Responder sees a new incident instantly; user sees acceptance instantly
+
+- Outsider sockets receive nothing
+
+- Network drop and restore leaves the UI correct
+
+
+
+Command (copy this box)
+
+PHASE 8: Real-time. Use the Project Context Block and Reference D.
+
+Backend: attach Socket.IO in server.js; handshake middleware using verifyToken from
+
+the auth phase; join user, role and incident rooms (participant check before
+
+incident:join, error:event on failure); a realtime emitter helper used by services to
+
+emit incident:new, incident:updated, incident:taken, notification:new; responder
+
+disconnect grace period. Frontend: SocketContext with one socket per session, hooks
+
+that subscribe and clean up listeners, live updates on dashboards and detail pages,
+
+ConnectionIndicator banner, re-fetch via REST and rejoin rooms on reconnect. Write
+
+socket tests (handshake rejection, room isolation, event delivery). Explain rooms,
+
+idempotent handlers and why events are only hints.
+
+
+
+Phase 9: Maps and Location
+
+Goal
+
+Maps for all roles, reliable location capture, live responder location, alert escalation.
+
+Build
+
+- Leaflet setup with fixed marker icons and one lat/lng conversion utility
+
+- IncidentMap (incident, user, responder markers; severity colours; fit bounds); LocationPicker with manual address fallback
+
+- useGeolocation hook (one-time and watch) with permission states; SOS works with location denied
+
+- responder shares location every 5 to 10 seconds only while ACCEPTED or IN_PROGRESS; server validates sender, status, coordinates and rate limit; emits to incident room
+
+- live responder marker for the user; stops when incident closes; admin live map
+
+- escalation: timer widens search radius and alerts admins if nobody accepts (configurable)
+
+Rules
+
+Location visible only to participants and admins. Stop sharing on close. Test geolocation on a real phone over HTTPS.
+
+Also paste
+
+Reference D (socket events)
+
+Done when
+
+- Marker appears at a known landmark
+
+- Live marker moves only during an active incident
+
+- SOS still works when location is denied
+
+- Escalation widens radius and alerts admins
+
+
+
+Command (copy this box)
+
+PHASE 9: Maps and location. Use the Project Context Block and Reference D.
+
+Frontend: React Leaflet with fixed default icons and a single coordinate conversion
+
+util; IncidentMap with severity-coloured markers and fit-bounds; LocationPicker with
+
+manual address fallback; useGeolocation hook; wire location into SOS and report;
+
+responder location sharing (throttled) with a sharing indicator; live responder marker
+
+for the user; admin live map. Backend: handle responder:location (assigned responder
+
+only, status ACCEPTED/IN_PROGRESS, valid coordinates, rate limited), update profile,
+
+emit to the incident room; alert escalation with timers (radius and timeout from env,
+
+timers cancelled on accept/cancel). Add tests for location authorization and
+
+throttling. Explain GeoJSON vs Leaflet order, 2dsphere and privacy rules.
+
+
+
+Phase 10: Chat and Notifications
+
+Goal
+
+Private incident chat and persistent in-app notifications.
+
+Build
+
+- chatService (participant check, 1 to 500 chars, closed-incident rule); chat:send handler; GET /incidents/:id/messages with cursor pagination
+
+- remove access after reassignment; admins may read
+
+- ChatPanel (history, live append without duplicates, auto-scroll, read-only when closed)
+
+- notifications for all key events; GET /notifications, PATCH /notifications/:id/read, PATCH /notifications/read-all; bell with unread counter and list page
+
+Rules
+
+senderId always from the socket. No messages after the incident closes. No notification spam on location updates.
+
+Also paste
+
+Reference C (notification and messages endpoints), Reference D
+
+Done when
+
+- Only participants read or send; outsiders get nothing
+
+- Messages persist and reload in order
+
+- Unread counter correct after reconnect
+
+
+
+Command (copy this box)
+
+PHASE 10: Chat and notifications. Use the Project Context Block and Reference C, D.
+
+Backend: chatService, chat:send socket handler (identity from socket, validate,
+
+save, emit chat:message to incident room), messages history endpoint with cursor
+
+pagination, reassignment access removal, notification endpoints and creation for
+
+accept, assign, status change, cancel, critical unassigned, responder verified.
+
+Frontend: ChatPanel, notification bell with live counter, notifications page with deep
+
+links. Tests: outsider cannot join or read, spoofed senderId ignored, closed incident
+
+rejects messages, history order and pagination, mark read ownership. Explain rooms as
+
+an authorization boundary and idempotent message append.
+
+
+
+Phase 11: Admin and Analytics
+
+Goal
+
+Full admin visibility and control plus statistics.
+
+Build
+
+- dashboard endpoint (active, critical, unassigned critical, available responders, resolved today) with live updates via the admins room
+
+- responder verification flow polish; suspend/reactivate (not self; revoke refresh token); severity override UI; incident history drawer with timeline
+
+- analytics aggregation pipelines (by category, severity, status, daily counts, average response and resolution times) and an analytics page with date range and Recharts
+
+- (Stretch) dynamic category management
+
+Rules
+
+Every admin route returns 403 for other roles. Destructive actions need confirmation and are audited.
+
+Also paste
+
+Reference C (admin section)
+
+Done when
+
+- Counts and analytics match a hand-calculated fixture
+
+- All admin routes reject non-admins
+
+- Suspended user loses access immediately
+
+
+
+Command (copy this box)
+
+PHASE 11: Admin and analytics. Use the Project Context Block and Reference C.
+
+Backend: GET /admin/dashboard, /admin/users, /admin/responders, /admin/incidents,
+
+/admin/analytics (MongoDB aggregation pipelines: by category, severity, status, daily
+
+counts, average response and resolution seconds), PATCH /admin/responders/:id/verify,
+
+PATCH /admin/users/:id/status (not self, revoke refresh token). Frontend: dashboard with
+
+live metric cards, verification tabs, suspend dialogs, incident history drawer,
+
+analytics page with date filter and Recharts. Tests with a known fixture, plus a 403
+
+sweep for non-admin roles. Explain aggregation stages and time-zone pitfalls.
+
+
+
+Phase 12: Security Hardening
+
+Goal
+
+Audit the whole system as an attacker would, fix findings, prove with tests.
+
+Build
+
+- route-by-route table: auth, role, ownership, validation
+
+- sweeps: IDOR on every :id endpoint; mass assignment (role, severity, status, assignedResponder, isActive)
+
+- JWT tampering, cookie flags, CORS, helmet headers, body limits, NoSQL injection, stored XSS, error leakage
+
+- socket abuse tests; rate limit tuning; npm audit; secret scan; privacy review of location and phone data
+
+Rules
+
+Fix classes of problems, not only the one found. Frontend guards are not security.
+
+Also paste
+
+Paste the code of the routes, middleware, services and socket handlers you want audited
+
+Done when
+
+- No open critical or major security defects
+
+- Every route and socket event has an explicit authorization decision
+
+- Security tests pass
+
+
+
+Command (copy this box)
+
+PHASE 12: Security audit. Use the Project Context Block. I will paste my backend
+
+code. Act as a security reviewer. For every route and socket event produce a table:
+
+method/path or event, authentication, role, ownership check, validation, finding.
+
+Then list vulnerabilities by severity (broken access control/IDOR, mass assignment,
+
+injection, XSS, auth/session flaws, CORS/cookie settings, error leakage, rate
+
+limiting, socket authorization, privacy of location and phone data) with the exact
+
+fix as code, and write Jest/Supertest tests that prove each fix. Also give me the
+
+checklist to run npm audit and scan the repository history for secrets.
+
+
+
+Phase 13: Testing
+
+Goal
+
+Close test gaps, run full scenarios, reach release-candidate quality.
+
+Build
+
+- map requirements to tests; add missing tests for authorization, state machine, claim, sockets, validation
+
+- manual end-to-end scenarios: happy path SOS; decline and reassign; accept race; user cancel; nobody online; responder verification; reconnect mid-incident; location denied
+
+- non-functional: SOS latency, explain() on key queries, about 50 concurrent sockets, accessibility, browser matrix
+
+- optional GitHub Actions (install, lint, test, build); regression test for every bug
+
+Rules
+
+Test behaviour, not implementation. Every fixed bug gets a regression test.
+
+Also paste
+
+Your current test list and coverage output
+
+Done when
+
+- All important tests pass (automated and manual)
+
+- End-to-end scenarios pass
+
+- No open critical or major defects; release candidate tagged
+
+
+
+Command (copy this box)
+
+PHASE 13: Testing. Use the Project Context Block. I will paste my test files and
+
+coverage report. Find missing tests for: authorization (wrong role, wrong owner),
+
+the transition matrix, the parallel claim, socket room isolation, validation, and
+
+business rules. Write the missing Jest/Supertest/Vitest tests. Give me a manual
+
+end-to-end script for the 8 scenarios (happy path, decline and reassign, accept race,
+
+user cancel, nobody online, responder verification, reconnect, location denied) and
+
+the non-functional checks. Add a GitHub Actions workflow (install, lint, test, build).
+
+
+
+Phase 14: Deployment
+
+Goal
+
+A public HTTPS URL where the full flow works.
+
+Build
+
+- one-service deployment: Express serves the built React app and the API (same origin, no CORS or cookie problems)
+
+- production Atlas database and user; production env vars (Secure cookies, correct CLIENT_URL, strong secrets)
+
+- host with WebSocket support (check current free-tier limits); seed admin once; smoke test and end-to-end on the live URL using a real phone for location
+
+Rules
+
+Never reuse the development database. No development settings in production. Record the URL and settings in brain.md.
+
+Also paste
+
+Your package.json files, server.js and app.js
+
+Done when
+
+- Full MVP and Core+ flow works on the live URL
+
+- Geolocation works on a phone over HTTPS
+
+- Cookie flags and CORS verified in production
+
+
+
+Command (copy this box)
+
+PHASE 14: Deployment. Use the Project Context Block. I will paste my package.json
+
+files, app.js and server.js. Prepare a single-service deployment: Express serves the
+
+built React app and handles client-side routes; build scripts; production env
+
+variables; secure cookie settings; WebSocket support. Compare 2 or 3 hosting options
+
+for a Node app with WebSockets (tell me to verify current free-tier limits) and give
+
+exact step-by-step instructions for the one I choose: <host name>. Include the Atlas
+
+production setup, running the seed script once, a smoke-test checklist and common
+
+production problems (cookies, CORS, WebSockets, IP allowlist) with fixes.
+
+
+
+Phase 15: Documentation
+
+Goal
+
+README and as-built documents; create the three final documents (Code Explanation Guide, Interview Preparation, Deployment Guide).
+
+Build
+
+- README: overview, features, screenshots or GIF, architecture diagram, stack, setup, env variables, scripts, tests, live link, limitations
+
+- update PRD, Design, Architecture and Tools, API Reference to match the real code; finalize brain.md; CHANGELOG
+
+- Code Explanation Guide (file by file); Interview Preparation document; Deployment Guide from real notes
+
+Rules
+
+Documents describe the finished product, not the plan. Do not put personal data in screenshots.
+
+Also paste
+
+The finished code files (in batches), brain.md, your deployment notes
+
+Done when
+
+- A stranger can run the project from the README
+
+- Documents agree with the code
+
+- The three final documents exist
+
+
+
+Command (copy this box)
+
+PHASE 15: Documentation. Use the Project Context Block. I will paste my finished code
+
+in batches plus brain.md and deployment notes. Produce: (1) a README.md; (2) a Code
+
+Explanation Guide as a Word document, file by file (purpose, key functions, inputs,
+
+validation, database operations, errors, related API/UI, one interview question per
+
+file); (3) an Interview Preparation document (30 s, 1 min and 5 min explanations,
+
+architecture and data-model walkthroughs, 10 design decisions with alternatives, bug
+
+stories from brain.md, question banks per area); (4) a Deployment Guide; (5) a list of
+
+differences between my original documents and the real code.
+
+
+
+Phase 16: Interview Preparation
+
+Goal
+
+Turn the project into confident answers and resume material.
+
+Build
+
+- 30-second, 1-minute and 5-minute explanations; diagrams from memory (architecture, state machine, data model)
+
+- three bug stories; trade-off answers (monolith, MongoDB vs SQL, cookies vs localStorage, REST vs sockets, atomic update vs locks)
+
+- question banks per area; resume bullets and project blurb (only real, measured numbers); mock interviews; rehearsed demo
+
+Rules
+
+Never overclaim. Know the downsides of your own choices.
+
+Also paste
+
+Your Interview Preparation document and brain.md
+
+Done when
+
+- You can explain any feature from UI to database without notes
+
+- You can defend at least ten design decisions and name the alternatives
+
+
+
+Command (copy this box)
+
+PHASE 16: Interview preparation. Use the Project Context Block. Act as a technical
+
+interviewer for an SDE fresher role. Ask me questions about CrisisConnect one at a
+
+time: project overview, architecture, state machine, atomic claim, authentication
+
+and cookies, MongoDB design and indexes, Socket.IO rooms and reconnects, security,
+
+testing, deployment, trade-offs. After each of my answers: score it out of 10, show
+
+what a strong answer includes, and ask a follow-up. Also write 5 resume bullets using
+
+only facts I confirm, and a 2-minute demo script.
+
+
+
+Part 4: Reference Blocks (paste when a phase asks)
+
+Reference A: Data model
+
+users: name, email(unique, lowercase), phone, password(bcrypt, select:false),
+
+  role USER|RESPONDER|ADMIN, isActive(default true), refreshTokenHash(select:false),
+
+  responderProfile{ verificationStatus PENDING|VERIFIED|REJECTED, verificationNote,
+
+    availability ONLINE|OFFLINE|BUSY(default OFFLINE), specialization[],
+
+    currentLocation GeoJSON Point [lng,lat] (2dsphere), lastLocationAt }, timestamps
+
+incidents: incidentNumber(CC-1001, unique), createdBy(ref users), assignedResponder,
+
+  category, description(<=1000), isSOS, severity, status(default PENDING),
+
+  location GeoJSON Point(2dsphere), locationAvailable, address, checklist{conscious,
+
+  breathing, severeBleeding, inDangerNow, injuries}, evidence[], statusHistory[{status,
+
+  changedBy, at, note}], declinedBy[], cancelReason, assignedAt, acceptedAt,
+
+  resolvedAt, timestamps
+
+messages: incidentId, senderId, text(1-500), readAt, createdAt; index(incidentId,createdAt)
+
+notifications: userId, type, title, message, relatedIncident, isRead, createdAt;
+
+  index(userId,isRead,createdAt). types: INCIDENT_NEW, INCIDENT_ASSIGNED,
+
+  INCIDENT_ACCEPTED, STATUS_CHANGED, INCIDENT_CANCELLED, CRITICAL_UNASSIGNED,
+
+  RESPONDER_VERIFIED
+
+counters: { _id:"incident", seq } incremented with $inc + upsert
+
+Indexes: incidents(status,severity,createdAt), (createdBy,createdAt),
+
+  (assignedResponder,status); users role+availability+verificationStatus.
+
+
+
+Reference B: Lifecycle and severity
+
+TRANSITIONS (from -> to : actor : guard)
+
+ new -> PENDING : system : valid input
+
+ PENDING -> ASSIGNED : ADMIN : responder VERIFIED, ONLINE, not in declinedBy
+
+ PENDING -> ACCEPTED : RESPONDER claim : verified, ONLINE, atomic on status=PENDING
+
+ ASSIGNED -> ACCEPTED : assigned RESPONDER
+
+ ASSIGNED -> PENDING : assigned RESPONDER decline or ADMIN reassign; add declinedBy
+
+ ACCEPTED -> IN_PROGRESS : assigned RESPONDER
+
+ IN_PROGRESS -> RESOLVED : assigned RESPONDER or ADMIN; set resolvedAt; responder
+
+     ONLINE; chat closes; location sharing stops
+
+ PENDING/ASSIGNED/ACCEPTED -> CANCELLED : creator USER or ADMIN (USER not after
+
+     IN_PROGRESS); free responder; store reason
+
+ IN_PROGRESS -> CANCELLED : ADMIN only, reason required
+
+ PENDING -> REJECTED : ADMIN, reason required
+
+ Every transition appends statusHistory {status, changedBy, at, note}.
+
+ Accept sets responder BUSY. Resolve/cancel sets responder ONLINE.
+
+ 
+
+SEVERITY (backend only; client sends inputs)
+
+ SOS -> HIGH; CRITICAL if not breathing / unconscious / severe bleeding / life threat
+
+ Medical manual -> CRITICAL for those answers; HIGH if in pain; else MEDIUM
+
+ Fire, Natural Disaster -> HIGH
+
+ Crime/Security -> HIGH if inDangerNow else MEDIUM
+
+ Accident -> HIGH if injuries else MEDIUM
+
+ Missing Person, Other -> MEDIUM
+
+ Admin may override with reason (audited).
+
+ 
+
+ALERTING: find ONLINE VERIFIED responders near incident ($near, start 5 km), exclude
+
+ BUSY and declinedBy; if nobody accepts within CLAIM_TIMEOUT_SEC widen radius
+
+ (10, 25 km) and alert admins.
+
+
+
+Reference C: API list (all under /api)
+
+AUTH   POST /auth/register (public) | /auth/register-responder (public)
+
+       POST /auth/login | /auth/refresh | /auth/logout ; GET /auth/me
+
+USERS  GET,PATCH /users/me ; PATCH /users/me/password ; GET /users/me/incidents (USER)
+
+INCIDENTS
+
+  POST /incidents (USER; isSOS, category, description, location{lat,lng}, address,
+
+       checklist; rate limited) -> 201
+
+  GET /incidents (role-scoped; page, limit, status, severity, category, from, to, sort)
+
+  GET /incidents/:id (creator, assigned responder, ADMIN; else 404)
+
+  PATCH /incidents/:id/status {status, note} (assigned RESPONDER or ADMIN)
+
+  POST /incidents/:id/assign {responderId} (ADMIN)
+
+  POST /incidents/:id/cancel {reason} (creator or ADMIN)
+
+  PATCH /incidents/:id/severity {severity, reason} (ADMIN)
+
+  GET /incidents/:id/messages ?before&limit (participants, ADMIN)
+
+RESPONDERS (RESPONDER)
+
+  PATCH /responders/status {availability ONLINE|OFFLINE} (must be VERIFIED)
+
+  PATCH /responders/location {lat,lng}
+
+  GET /responders/incidents ?scope=available|assigned|completed
+
+  POST /responders/incidents/:id/accept   (409 ALREADY_TAKEN if lost the race)
+
+  POST /responders/incidents/:id/decline {reason}
+
+NOTIFICATIONS  GET /notifications ?unreadOnly ; PATCH /notifications/:id/read ;
+
+  PATCH /notifications/read-all
+
+ADMIN (ADMIN only)
+
+  GET /admin/users ?role,isActive,search ; GET /admin/responders ?verificationStatus
+
+  PATCH /admin/responders/:id/verify {status VERIFIED|REJECTED, note}
+
+  PATCH /admin/users/:id/status {isActive, reason} (not self)
+
+  GET /admin/incidents ; GET /admin/dashboard ; GET /admin/analytics ?from,to
+
+HEALTH GET /health
+
+
+
+Reference D: Socket.IO
+
+Connect with credentials; handshake verifies the access-token cookie (reject if
+
+invalid or suspended). Auto-join: user:<id>; responders:online (verified ONLINE);
+
+admins. Incident room incident:<id> only after participant (creator, assigned
+
+responder) or admin check.
+
+SERVER -> CLIENT
+
+  incident:new {incidentId, incidentNumber, category, severity, isSOS, location}
+
+  incident:updated {incidentId, status, assignedResponder, severity, at}
+
+  incident:taken {incidentId}
+
+  responder:location {incidentId, lat, lng, at}
+
+  chat:message {_id, incidentId, senderId, senderName, text, createdAt}
+
+  notification:new {_id, type, title, message, relatedIncident, createdAt}
+
+  error:event {code, message, event}
+
+CLIENT -> SERVER
+
+  incident:join {incidentId} ; incident:leave {incidentId}
+
+  chat:send {incidentId, text}  (participant, incident active, 1-500 chars)
+
+  responder:location {incidentId, lat, lng} (assigned responder; ACCEPTED or
+
+     IN_PROGRESS; valid coords; throttled to one per ~5 s)
+
+Responder disconnect: grace 30-60 s then OFFLINE. Client on reconnect: re-fetch
+
+incident, messages, notifications over REST and rejoin rooms.
+
+
+
+Reference E: Pages and design tokens
+
+PUBLIC: / , /login , /register , /register-responder , /about
+
+USER: /user/dashboard (big SOS button), /user/report, /user/incidents,
+
+      /user/incidents/:id (timeline, map, responder card, chat, cancel), /user/profile
+
+RESPONDER: /responder/dashboard (ONLINE/OFFLINE toggle, feed with Accept/Decline,
+
+      map), /responder/incidents, /responder/incidents/:id (summary, map, chat,
+
+      Start/Resolve), /responder/profile
+
+ADMIN: /admin/dashboard (metric cards, critical list, live map), /admin/users,
+
+      /admin/responders (tabs: pending, verified, rejected), /admin/incidents (filters,
+
+      assign dialog, history drawer), /admin/analytics (charts, date range)
+
+TOKENS: primary #1F4E79; emergency red #C62828; severity LOW #2E7D32, MEDIUM #F9A825,
+
+  HIGH #EF6C00, CRITICAL #C62828 (pulsing outline); background #F5F7FA; surface #FFFFFF;
+
+  text #1A1A1A / #5F6B7A; radius 8 px; touch targets >= 44 px; SOS button >= 120 px.
+
+Status colours: PENDING grey, ASSIGNED blue, ACCEPTED teal, IN_PROGRESS purple,
+
+  RESOLVED green, CANCELLED/REJECTED dark grey. Always show text with colour.
+
+Every page needs loading, empty and error states; mobile-first; keyboard accessible.
+
+Show an emergency-number notice (112 in India) on landing and SOS pages.
+
+
+
+Quick Checklist per Phase (copy into brain.md)
+
+Before moving to the next phase
+
+Tick
+
+Code runs and all tests for this phase pass
+
+[ ]
+
+I can explain each new file from request to database in my own words
+
+[ ]
+
+Committed to Git with meaningful messages; tag created at milestones
+
+[ ]
+
+brain.md updated: status, decisions, bugs and lessons, next action
+
+[ ]
+
+No secrets committed; .env.example up to date
+
+[ ]
+

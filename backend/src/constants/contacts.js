@@ -1,0 +1,8 @@
+export const RELATIONSHIPS = {
+  FAMILY: 'FAMILY',
+  FRIEND: 'FRIEND',
+  COLLEAGUE: 'COLLEAGUE',
+  OTHER: 'OTHER',
+};
+
+export const RELATIONSHIP_VALUES = Object.values(RELATIONSHIPS);

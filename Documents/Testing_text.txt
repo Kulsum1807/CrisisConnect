@@ -1,0 +1,5786 @@
+CrisisConnect
+
+Testing Document and API Reference
+
+How CrisisConnect is verified, and the exact contract of every API
+
+Real-Time Emergency Response and Incident Management Platform
+
+Full-Stack MERN Application
+
+Version 1.0 | Part A: Testing | Part B: API Reference | Built on the PRD, Design and Architecture documents
+
+
+
+Document Guide
+
+This document joins two things that depend on each other: the API Reference says exactly what each endpoint and socket event must do, and the Testing Document says how you prove it does that. Write a test from each reference entry and each PRD acceptance criterion.
+
+Part
+
+Sections
+
+Use it when
+
+A: Testing
+
+1 to 12
+
+Planning tests per phase, writing test code, doing manual checks, preparing for interview questions on testing
+
+B: API Reference
+
+13 to 22
+
+Building a route, calling it from React, writing Postman or Supertest requests
+
+
+
+Note
+
+The API Reference is the planned contract taken from the Design Document. After the backend exists, run every request in Postman, replace the example responses with real ones, and tick the "verified" column in section 22. If the real behaviour must differ from this contract, change the contract and the Design Document together.
+
+Test case ID format: TC-<MODULE>-<number>. Priority: P1 must pass before any demo or release, P2 important, P3 nice to have. Ref points to PRD requirement or business rule IDs.
+
+PART A: TESTING
+
+1. Testing Strategy
+
+1.1 Goals
+
+Prove every MVP and Core+ requirement in the PRD works as specified.
+
+Protect the parts where bugs are most dangerous: authorization, the incident state machine, exclusive claiming and real-time delivery.
+
+Catch regressions automatically as the project grows, so changes never silently break old features.
+
+Produce evidence (test results, a manual test log) that you can show and explain in interviews.
+
+1.2 Risk-based focus
+
+Risk area
+
+Why it matters
+
+Testing emphasis
+
+Access control (IDOR, role bypass)
+
+Data exposure of locations and phone numbers
+
+Negative tests on every endpoint and socket event; all P1
+
+State machine
+
+Invalid transitions corrupt incident history
+
+Exhaustive transition matrix; unit and integration
+
+Concurrency (claim, assign)
+
+Two responders on one incident
+
+Parallel-request tests
+
+Real-time delivery
+
+Missed or leaked events
+
+Multi-client socket tests; reconnect tests
+
+Input handling
+
+Injection, mass assignment, crashes on bad IDs
+
+Validation and security tests
+
+Location handling
+
+Wrong country markers; denied permission
+
+Coordinate-order tests; fallback tests
+
+
+
+1.3 Test pyramid for CrisisConnect
+
+            /\          Manual E2E scenarios (few, slow, high value)
+
+           /  \         Socket and multi-client tests
+
+          /----\        API integration tests (Supertest + in-memory MongoDB)
+
+         /------\       Frontend component and hook tests
+
+        /--------\      Unit tests: services, severity rules, transition map, validators
+
+
+
+Level
+
+What is tested
+
+Tools
+
+Runs
+
+Unit
+
+Pure logic: severityService, transitions map, validators, utils (coordinate conversion, formatting)
+
+Jest
+
+Every save / commit
+
+Integration (API)
+
+Routes with middleware, services and a real (in-memory) database
+
+Jest, Supertest, mongodb-memory-server
+
+Every commit and pull request
+
+Socket
+
+Auth handshake, rooms, events, authorization of events
+
+Jest, socket.io-client
+
+Every commit and pull request
+
+Frontend component
+
+Forms, badges, ProtectedRoute, hooks with mocked API
+
+Vitest, React Testing Library
+
+Every commit
+
+Manual E2E
+
+Full flows across two or three browsers
+
+Browsers, Postman, DevTools
+
+Before each demo, and after deployment
+
+Security
+
+Access control, injection, headers, cookies
+
+Jest/Supertest cases, Postman, DevTools, manual review
+
+Phase 12 and before release
+
+Non-functional
+
+Performance, responsiveness, accessibility, browser support
+
+DevTools, Lighthouse, manual
+
+Before release
+
+
+
+1.4 Coverage targets
+
+Area
+
+Target
+
+Critical logic (transitions, claim, authorization, severity)
+
+100% of branches covered by meaningful tests
+
+Services overall
+
+At least 80% line coverage
+
+Controllers and routes
+
+Every endpoint has a success test and at least one failure test
+
+Frontend
+
+Key forms, guards and shared components; do not chase a percentage
+
+Coverage is a guide, not a goal. A test that runs a line without asserting anything is worthless; prefer fewer tests with clear assertions.
+
+Interview angle
+
+"How did you test your project?" Name the pyramid, then give the two best examples: the parallel-claim concurrency test and the IDOR negative tests. Mention that tests run on an in-memory database so they are fast and safe.
+
+2. Test Environment and Data
+
+Item
+
+Setup
+
+Backend test database
+
+mongodb-memory-server started per test file or suite; cleared between tests
+
+App under test
+
+Import app.js (not server.js) so Supertest does not open a port
+
+Socket tests
+
+Start an HTTP server with Socket.IO on a random port in beforeAll; connect clients with socket.io-client; close in afterAll
+
+Test configuration
+
+NODE_ENV=test, a separate .env.test with test secrets, short token lifetimes where needed, rate limits raised or reset for non-rate-limit tests
+
+Time control
+
+Use fake timers or small configurable values for grace periods, claim timeout and token expiry
+
+Manual environments
+
+Local (dev) and deployed (production URL) with separate Atlas databases
+
+
+
+2.1 Standard seed data (fixtures)
+
+Account
+
+Role and state
+
+Used for
+
+admin@test.com
+
+ADMIN, active
+
+Admin actions, dashboards
+
+asha@test.com
+
+USER, active
+
+Primary reporter
+
+ravi@test.com
+
+USER, active
+
+Second user for IDOR tests
+
+resp1@test.com
+
+RESPONDER, VERIFIED, ONLINE, location near Point A
+
+Accept, status updates
+
+resp2@test.com
+
+RESPONDER, VERIFIED, ONLINE, location near Point A
+
+Races, reassignment
+
+resp3@test.com
+
+RESPONDER, VERIFIED, OFFLINE
+
+Offline cases
+
+resp4@test.com
+
+RESPONDER, PENDING verification
+
+Unverified cases
+
+suspended@test.com
+
+USER, isActive = false
+
+Suspension cases
+
+
+
+Helpers to write once: createUser(role, overrides), loginAs(user) returning an agent with cookies, createIncident(user, overrides), setResponderState(responder, state), connectSocket(user), waitForEvent(socket, name, timeout). Good helpers make tests short and readable.
+
+Known coordinates for location tests: use a fixed Point A (for example 28.6139 latitude, 77.2090 longitude), a point about 1 km away, a point about 8 km away and a point about 40 km away so radius and ordering tests are deterministic.
+
+3. Test Cases
+
+Columns: ID, scenario, steps or input, expected result, reference and priority. "API" means a Supertest or Postman request. Write each P1 case as an automated test where possible.
+
+3.1 Authentication and Accounts (AUTH)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-AUTH-01
+
+Register valid user
+
+POST /auth/register with valid name, email, phone, password
+
+201; role USER; response has no password; DB holds a bcrypt hash
+
+FR-AUTH-01, 03; P1
+
+TC-AUTH-02
+
+Duplicate email
+
+Register twice; second time with different letter case
+
+409 DUPLICATE
+
+FR-AUTH-02; P1
+
+TC-AUTH-03
+
+Role injection at register
+
+Body includes role: "ADMIN"
+
+201 but stored role is USER
+
+BR-01; P1
+
+TC-AUTH-04
+
+Weak password
+
+password "123"
+
+400 VALIDATION_ERROR with password field
+
+FR-AUTH-01; P2
+
+TC-AUTH-05
+
+Missing or invalid email
+
+Omit email; then "abc"
+
+400 with field errors
+
+FR-AUTH-01; P2
+
+TC-AUTH-06
+
+Responder registration
+
+POST /auth/register-responder
+
+201; role RESPONDER; verificationStatus PENDING; availability OFFLINE
+
+FR-RESP-01; P1
+
+TC-AUTH-07
+
+Login valid
+
+POST /auth/login
+
+200; access and refresh cookies httpOnly; no password in body
+
+FR-AUTH-04; P1
+
+TC-AUTH-08
+
+Wrong password
+
+Correct email, wrong password
+
+401 with generic message
+
+FR-AUTH-04; P1
+
+TC-AUTH-09
+
+Unknown email
+
+Email not registered
+
+401, same message as TC-AUTH-08 (no user enumeration)
+
+NFR-SEC-01; P1
+
+TC-AUTH-10
+
+Suspended login
+
+Login as suspended user
+
+403 ACCOUNT_SUSPENDED
+
+FR-AUTH-09; P1
+
+TC-AUTH-11
+
+No cookie on protected route
+
+GET /auth/me without cookie
+
+401 UNAUTHENTICATED
+
+FR-AUTH-07; P1
+
+TC-AUTH-12
+
+Expired access token
+
+Use a token past expiry
+
+401 TOKEN_EXPIRED
+
+FR-AUTH-07; P1
+
+TC-AUTH-13
+
+Refresh valid
+
+POST /auth/refresh with valid refresh cookie
+
+200; new access cookie; refresh token rotated
+
+D-04; P1
+
+TC-AUTH-14
+
+Refresh after logout
+
+Logout, then reuse the old refresh cookie
+
+401; session cannot be revived
+
+FR-AUTH-05; P1
+
+TC-AUTH-15
+
+Logout
+
+POST /auth/logout then GET /auth/me
+
+Cookies cleared; refreshTokenHash cleared; /me returns 401
+
+FR-AUTH-05; P1
+
+TC-AUTH-16
+
+Role middleware
+
+USER calls /admin/users
+
+403 FORBIDDEN
+
+FR-AUTH-07; P1
+
+TC-AUTH-17
+
+Password never leaks
+
+Call /users/me, /admin/users, /admin/responders, populated incidents
+
+No password or refreshTokenHash field anywhere
+
+BR-14; P1
+
+TC-AUTH-18
+
+Login rate limit
+
+11 rapid failed logins
+
+429 RATE_LIMITED after the limit
+
+FR-AUTH-10; P2
+
+TC-AUTH-19
+
+Change password
+
+Wrong current, then correct current
+
+Wrong: 401/400; correct: 200 and old password no longer works
+
+FR-AUTH-08; P2
+
+TC-AUTH-20
+
+Suspended during session
+
+Admin suspends a logged-in user; user calls /auth/me
+
+403 on the next request
+
+FR-AUTH-09; P1
+
+TC-AUTH-21
+
+Profile update
+
+PATCH /users/me name and phone; try to change role or email
+
+Name and phone updated; role and email unchanged
+
+FR-AUTH-08; P2
+
+
+
+3.2 Incident Creation (INC)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-INC-01
+
+SOS with location
+
+POST /incidents isSOS true with lat/lng
+
+201; status PENDING; isSOS true; severity HIGH; number like CC-1001; statusHistory has one entry
+
+FR-INC-01, 02; P1
+
+TC-INC-02
+
+SOS with life-threat checklist
+
+checklist.breathing false or unconscious
+
+severity CRITICAL; admins alerted
+
+FR-INC-08; P1
+
+TC-INC-03
+
+SOS without location
+
+Omit location
+
+201; locationAvailable false; incident flagged; client prompted for address
+
+FR-INC-11; P1
+
+TC-INC-04
+
+Manual report valid
+
+category MEDICAL, description, location
+
+201 with computed severity
+
+FR-INC-03; P1
+
+TC-INC-05
+
+Manual report missing description
+
+Omit description
+
+400 VALIDATION_ERROR
+
+FR-INC-03; P1
+
+TC-INC-06
+
+Invalid category
+
+category "ALIEN"
+
+400
+
+FR-INC-03; P2
+
+TC-INC-07
+
+Invalid coordinates
+
+lat 95 or lng 200 or strings
+
+400
+
+NFR-SEC-03; P2
+
+TC-INC-08
+
+Client-controlled fields ignored
+
+Send severity, status, createdBy, incidentNumber
+
+Values set by server; sent values ignored
+
+FR-INC-08; P1
+
+TC-INC-09
+
+Responder cannot create
+
+RESPONDER calls POST /incidents
+
+403
+
+BR-08; P1
+
+TC-INC-10
+
+Unauthenticated create
+
+No cookie
+
+401
+
+FR-AUTH-07; P1
+
+TC-INC-11
+
+Unique incident numbers
+
+20 parallel creates
+
+20 distinct numbers, no duplicates
+
+FR-INC-02; P1
+
+TC-INC-12
+
+Creation rate limit
+
+Exceed allowed incidents per period
+
+429 RATE_LIMITED
+
+FR-INC-12; P2
+
+TC-INC-13
+
+HTML in description
+
+<script>alert(1)</script>
+
+Stored safely (stripped or escaped); never executes in UI
+
+NFR-SEC-03; P1
+
+TC-INC-14
+
+Eligible responders alerted
+
+Create near Point A
+
+resp1 and resp2 receive incident:new; resp3 (offline) and resp4 (unverified) do not
+
+FR-RESP-02; P1
+
+TC-INC-15
+
+No responders available
+
+All responders offline
+
+Incident stays PENDING; admins alerted
+
+BR-15; P2
+
+TC-INC-16
+
+Severity rule table (unit)
+
+Parameterised test for every row of the severity table
+
+Each input maps to the documented severity
+
+FR-INC-08; P1
+
+TC-INC-17
+
+NoSQL operator in body
+
+description: { "$gt": "" }
+
+Rejected or sanitized; no server error
+
+NFR-SEC-03; P1
+
+TC-INC-18
+
+Oversized or wrong image (Stretch)
+
+Upload 10 MB .exe
+
+400; nothing stored
+
+FR-INC-04; P3
+
+
+
+3.3 Reading and Access Control (ACC)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-ACC-01
+
+User lists own incidents
+
+asha GET /incidents
+
+Only asha's incidents, paginated
+
+FR-INC-10, BR-08; P1
+
+TC-ACC-02
+
+User reads another user's incident
+
+ravi GET /incidents/:ashaIncidentId
+
+404 NOT_FOUND (not 403)
+
+BR-08, SC-03; P1
+
+TC-ACC-03
+
+Responder available list
+
+resp1 GET /responders/incidents?scope=available
+
+Only PENDING incidents, excluding ones that resp1 declined
+
+FR-RESP-04, BR-12; P1
+
+TC-ACC-04
+
+Responder reads unrelated incident
+
+resp1 GET incident assigned to resp2
+
+404
+
+BR-08; P1
+
+TC-ACC-05
+
+Admin lists and filters
+
+GET /admin/incidents?status=PENDING&severity=HIGH
+
+Correct filtered, paginated results
+
+FR-ADM-04; P2
+
+TC-ACC-06
+
+Pagination limits
+
+limit=1000; page=0; limit=abc
+
+limit capped at 100; invalid values give 400 or defaults
+
+NFR-PERF-02; P2
+
+TC-ACC-07
+
+Invalid ObjectId
+
+GET /incidents/123
+
+400, not a 500 crash
+
+NFR-SEC-03; P1
+
+TC-ACC-08
+
+Responder completed list
+
+GET scope=completed
+
+Only incidents resolved by this responder
+
+FR-RESP-09; P2
+
+TC-ACC-09
+
+Incident detail populated safely
+
+Participant GET /incidents/:id
+
+User and responder summaries without password or tokens; phone only for participants and admin
+
+NFR-PRIV-01; P1
+
+
+
+3.4 Incident State Machine (SM)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-SM-01
+
+Admin assigns PENDING
+
+Admin POST /incidents/:id/assign with resp1
+
+ASSIGNED; assignedResponder set; assignedAt; resp1 notified
+
+FR-ADM-05; P1
+
+TC-SM-02
+
+Assign offline responder
+
+Assign resp3
+
+409 or 400; status unchanged
+
+BR-04; P1
+
+TC-SM-03
+
+Assign unverified responder
+
+Assign resp4
+
+400; status unchanged
+
+BR-04; P1
+
+TC-SM-04
+
+Self-claim PENDING
+
+resp1 POST /responders/incidents/:id/accept
+
+ACCEPTED; resp1 BUSY; user and admins notified; chat opens
+
+FR-RESP-05; P1
+
+TC-SM-05
+
+Assigned responder accepts
+
+ASSIGNED to resp1; resp1 accepts
+
+ACCEPTED
+
+FR-RESP-05; P1
+
+TC-SM-06
+
+Wrong responder accepts assigned incident
+
+ASSIGNED to resp1; resp2 accepts
+
+403
+
+BR-03; P1
+
+TC-SM-07
+
+Start work
+
+resp1 PATCH status IN_PROGRESS
+
+200; history entry added
+
+FR-RESP-06; P1
+
+TC-SM-08
+
+Resolve
+
+resp1 PATCH status RESOLVED
+
+resolvedAt set; resp1 ONLINE; chat read-only; location sharing stops
+
+FR-RESP-06; P1
+
+TC-SM-09
+
+Skip a state
+
+ACCEPTED straight to RESOLVED
+
+409 INVALID_TRANSITION
+
+FR-INC-06; P1
+
+TC-SM-10
+
+Illegal start
+
+PENDING to IN_PROGRESS
+
+409 INVALID_TRANSITION
+
+FR-INC-06; P1
+
+TC-SM-11
+
+Terminal states are final
+
+Change status of RESOLVED, CANCELLED and REJECTED incidents
+
+409 for every attempt
+
+BR-06; P1
+
+TC-SM-12
+
+User cancels early
+
+User cancels at PENDING, ASSIGNED, ACCEPTED (three incidents)
+
+CANCELLED; reason stored; responder freed (ONLINE)
+
+FR-INC-09, BR-07; P1
+
+TC-SM-13
+
+User cancels too late
+
+User cancels at IN_PROGRESS
+
+403 or 409
+
+BR-07; P1
+
+TC-SM-14
+
+Admin cancels IN_PROGRESS
+
+Admin cancel with reason
+
+CANCELLED; participants notified
+
+BR-07; P2
+
+TC-SM-15
+
+Admin cancel without reason
+
+Admin cancel IN_PROGRESS, no reason
+
+400
+
+BR-07; P2
+
+TC-SM-16
+
+Reject false report
+
+Admin rejects PENDING with reason
+
+REJECTED; user notified
+
+FR-ADM-06; P2
+
+TC-SM-17
+
+Decline assignment
+
+resp1 declines ASSIGNED
+
+Back to PENDING; resp1 in declinedBy; not offered again to resp1
+
+FR-RESP-07, BR-12; P2
+
+TC-SM-18
+
+Audit trail
+
+Run a full lifecycle
+
+One statusHistory entry per transition with correct actor and time
+
+FR-INC-07, SC-06; P1
+
+TC-SM-19
+
+User cannot change status
+
+USER PATCH /incidents/:id/status
+
+403
+
+BR-05; P1
+
+TC-SM-20
+
+Full transition matrix (unit)
+
+For every (from, to) pair run transition via the service
+
+Only pairs in the allowed map succeed; all others throw INVALID_TRANSITION
+
+BR-05; P1
+
+TC-SM-21
+
+Severity override
+
+Admin PATCH severity with reason; then responder tries
+
+Admin: 200 and audit entry; responder: 403
+
+FR-ADM-09, BR-02; P2
+
+
+
+3.5 Concurrency (CON)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-CON-01
+
+Two responders claim at once
+
+Promise.all of two accept requests on one PENDING incident
+
+Exactly one 200; the other 409 ALREADY_TAKEN; one assignedResponder
+
+FR-RESP-05, SC-02; P1
+
+TC-CON-02
+
+Ten responders claim at once
+
+Ten parallel accepts
+
+Exactly one winner
+
+SC-02; P1
+
+TC-CON-03
+
+Claim versus cancel race
+
+Parallel accept and user cancel
+
+Final state is consistent (either ACCEPTED then cancellable, or CANCELLED and accept gets 409); no half-updated document
+
+BR-05; P2
+
+TC-CON-04
+
+Admin assign versus self-claim
+
+Parallel assign and accept
+
+One winner; history shows a valid sequence
+
+BR-03; P2
+
+TC-CON-05
+
+Double click accept
+
+Same responder sends accept twice
+
+No duplicate history entry; second gets 409 or the same final state
+
+NFR-REL-01; P2
+
+
+
+3.6 Responders (RESP)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-RESP-01
+
+Go online when verified
+
+resp1 PATCH /responders/status ONLINE
+
+200
+
+FR-RESP-03; P1
+
+TC-RESP-02
+
+Go online when unverified
+
+resp4 sets ONLINE
+
+403
+
+BR-04; P1
+
+TC-RESP-03
+
+Go offline while BUSY
+
+BUSY responder sets OFFLINE
+
+409 (finish or hand over the incident first)
+
+BR-10; P2
+
+TC-RESP-04
+
+Location update stored correctly
+
+PATCH /responders/location lat, lng
+
+Stored as GeoJSON [lng, lat]; lastLocationAt updated
+
+FR-LOC-02; P1
+
+TC-RESP-05
+
+Non-responder updates location
+
+USER calls the endpoint
+
+403
+
+FR-AUTH-07; P1
+
+TC-RESP-06
+
+Nearby ordering and radius
+
+Responders at 1 km, 8 km, 40 km; radius 5 km
+
+Only the 1 km responder alerted; after timeout radius widens and the 8 km responder is alerted
+
+FR-RESP-10, BR-15; P2
+
+TC-RESP-07
+
+Stale location fallback
+
+Only responder has no or old location
+
+Still alerted when nobody nearby exists
+
+Design 4.2; P3
+
+TC-RESP-08
+
+Disconnect grace period
+
+Responder socket disconnects
+
+Remains ONLINE during grace, then OFFLINE after it
+
+FR-RESP-08; P2
+
+TC-RESP-09
+
+BUSY not alerted
+
+BUSY responder while a new incident is created
+
+No incident:new for that responder
+
+BR-10; P1
+
+TC-RESP-10
+
+Declined not re-offered
+
+resp1 declines; incident returns to pool
+
+resp1 never receives it again; resp2 does
+
+BR-12; P2
+
+
+
+3.7 Administration (ADM)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-ADM-01
+
+List and search users
+
+GET /admin/users?search=asha&page=1
+
+Correct paginated, filtered results
+
+FR-ADM-01; P2
+
+TC-ADM-02
+
+Verify responder
+
+PATCH /admin/responders/:id/verify VERIFIED
+
+verificationStatus VERIFIED; responder notified; can now go ONLINE
+
+FR-ADM-02; P1
+
+TC-ADM-03
+
+Reject responder
+
+status REJECTED with note
+
+REJECTED; cannot go ONLINE
+
+FR-ADM-02; P2
+
+TC-ADM-04
+
+Suspend user
+
+PATCH /admin/users/:id/status isActive false
+
+User cannot log in; existing session blocked
+
+FR-ADM-03, BR-11; P1
+
+TC-ADM-05
+
+Admin cannot suspend self
+
+Admin targets own id
+
+400 or 403
+
+Design 6.4; P2
+
+TC-ADM-06
+
+Reactivate user
+
+isActive true
+
+User can log in again
+
+FR-ADM-03; P2
+
+TC-ADM-07
+
+Dashboard counts
+
+Use a known fixture
+
+Active, critical, available and resolved-today counts match fixture
+
+FR-ADM-07; P2
+
+TC-ADM-08
+
+Analytics aggregates
+
+Fixture with known counts and times
+
+By category, severity, status and average times match hand calculation
+
+FR-ADM-08; P3
+
+TC-ADM-09
+
+Non-admin on every admin route
+
+USER and RESPONDER call each /admin route
+
+403 for all
+
+FR-AUTH-07; P1
+
+TC-ADM-10
+
+Assignment options
+
+Open Assign dialog (UI)
+
+Lists only verified, ONLINE responders
+
+US-09; P2
+
+
+
+3.8 Chat (CHAT)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-CHAT-01
+
+Participants exchange messages
+
+User and responder in the incident room
+
+Both receive messages in real time; stored in messages
+
+FR-CHAT-03; P1
+
+TC-CHAT-02
+
+Outsider cannot join
+
+Third user emits incident:join
+
+error:event; no room membership; receives nothing
+
+FR-CHAT-02, SC-05; P1
+
+TC-CHAT-03
+
+Unauthenticated socket
+
+Connect without cookie
+
+Connection rejected
+
+NFR-SEC-02; P1
+
+TC-CHAT-04
+
+Sender spoofing
+
+Payload contains another senderId
+
+Ignored; saved senderId equals socket identity
+
+Design 8.3; P1
+
+TC-CHAT-05
+
+Message too long
+
+501 characters
+
+Rejected; nothing saved
+
+FR-CHAT-03; P2
+
+TC-CHAT-06
+
+Empty or whitespace message
+
+"   "
+
+Rejected
+
+FR-CHAT-03; P2
+
+TC-CHAT-07
+
+Chat after incident closed
+
+Send after RESOLVED or CANCELLED
+
+Rejected; history still readable
+
+FR-CHAT-05; P1
+
+TC-CHAT-08
+
+History order and pagination
+
+GET /incidents/:id/messages
+
+Chronological, limited, cursor works
+
+FR-CHAT-04; P2
+
+TC-CHAT-09
+
+Admin may read
+
+Admin joins and reads
+
+Allowed
+
+FR-CHAT-02; P2
+
+TC-CHAT-10
+
+Reassigned responder loses access
+
+Previous responder tries to read or send after reassignment
+
+Rejected
+
+BR-09; P1
+
+
+
+3.9 Location and Map (LOC)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-LOC-01
+
+Live update delivered
+
+Assigned responder emits responder:location
+
+Incident room receives it; user marker moves
+
+FR-LOC-04; P1
+
+TC-LOC-02
+
+Non-assigned sender
+
+Another responder emits for the incident
+
+Rejected
+
+BR-09; P1
+
+TC-LOC-03
+
+Wrong lifecycle stage
+
+Emit while PENDING or after RESOLVED
+
+Rejected
+
+FR-LOC-05; P1
+
+TC-LOC-04
+
+Throttle
+
+Emit 20 updates in one second
+
+Excess dropped or rejected
+
+NFR-PERF-03; P2
+
+TC-LOC-05
+
+Invalid coordinates
+
+lat 999
+
+Rejected
+
+NFR-SEC-03; P2
+
+TC-LOC-06
+
+Third user isolation
+
+Unrelated user connected
+
+Receives no location events
+
+NFR-PRIV-01; P1
+
+TC-LOC-07
+
+Coordinate order on the map (UI)
+
+Create incident at a known landmark; view on map
+
+Marker is at the landmark (not in another country)
+
+FR-LOC-03; P1
+
+TC-LOC-08
+
+Permission denied (UI)
+
+Block location in the browser
+
+Banner and manual address input; SOS still works
+
+FR-INC-11; P1
+
+TC-LOC-09
+
+Sharing stops when closed (UI)
+
+Resolve incident
+
+Responder indicator off; no more updates
+
+FR-LOC-05; P2
+
+
+
+3.10 Notifications (NOTIF)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-NOTIF-01
+
+Created and delivered
+
+Responder accepts
+
+Notification saved; notification:new emitted to user:<id> only
+
+FR-NOTIF-02, 03; P1
+
+TC-NOTIF-02
+
+Unread counter
+
+Create several; read one
+
+Counter correct
+
+FR-NOTIF-03; P2
+
+TC-NOTIF-03
+
+Mark read and ownership
+
+Mark own; try another user's
+
+Own: 200; other: 404
+
+FR-NOTIF-04; P1
+
+TC-NOTIF-04
+
+Mark all read
+
+PATCH read-all
+
+All own notifications read
+
+FR-NOTIF-04; P3
+
+TC-NOTIF-05
+
+Offline user catches up
+
+Event happens while user is offline; user logs in
+
+Notification visible from the database
+
+FR-NOTIF-05; P2
+
+TC-NOTIF-06
+
+Critical alert to admins
+
+Create CRITICAL incident
+
+Admin room receives alert and notification
+
+FR-NOTIF-01; P2
+
+
+
+3.11 Real-Time Resilience (RT)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-RT-01
+
+Reconnect restores state
+
+Drop network on the user page; change status from another client; restore
+
+Banner shows then clears; UI shows the current status
+
+FR-NOTIF-05, NFR-REL-01; P1
+
+TC-RT-02
+
+Idempotent events
+
+Deliver the same incident:updated twice
+
+No duplicate list items or double messages
+
+Architecture 7.5; P2
+
+TC-RT-03
+
+Listener cleanup
+
+Navigate away from and back to an incident page several times; send one message
+
+Message appears once
+
+Architecture 6.5; P1
+
+TC-RT-04
+
+Server restart recovery
+
+Restart backend during an active incident
+
+Clients reconnect; data intact; rooms rejoined
+
+NFR-REL-01, SC-04; P2
+
+TC-RT-05
+
+Single socket per session
+
+Inspect network WS frames
+
+One connection per tab
+
+ADR-09; P3
+
+
+
+3.12 Security (SEC)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-SEC-01
+
+IDOR sweep
+
+For every :id endpoint call with another user's incident id
+
+404 or 403 every time; no data in response
+
+SC-03; P1
+
+TC-SEC-02
+
+Mass assignment sweep
+
+Send role, severity, status, assignedResponder, isActive on every write endpoint
+
+Fields ignored or rejected
+
+BR-01, BR-02; P1
+
+TC-SEC-03
+
+Tampered JWT
+
+Modify payload, keep signature
+
+401
+
+NFR-SEC-02; P1
+
+TC-SEC-04
+
+Unsigned JWT
+
+Token with alg none
+
+401
+
+NFR-SEC-02; P1
+
+TC-SEC-05
+
+Cookie flags
+
+Inspect Set-Cookie in dev and production
+
+httpOnly always; Secure and correct SameSite in production
+
+D-04; P1
+
+TC-SEC-06
+
+CORS
+
+Request from a disallowed origin
+
+Blocked; no CORS headers for that origin
+
+NFR-SEC-03; P1
+
+TC-SEC-07
+
+Login injection
+
+Body email: { "$ne": null }, password: { "$ne": null }
+
+Rejected with 400; no login
+
+NFR-SEC-03; P1
+
+TC-SEC-08
+
+XSS in stored text
+
+Names and descriptions with script and event-handler payloads
+
+Rendered as plain text everywhere
+
+NFR-SEC-03; P1
+
+TC-SEC-09
+
+Security headers
+
+Inspect response headers
+
+Helmet headers present
+
+NFR-SEC-03; P2
+
+TC-SEC-10
+
+No stack traces
+
+Trigger a server error in production mode
+
+Generic message; no stack trace or internals
+
+Design 10; P1
+
+TC-SEC-11
+
+Rate limits active
+
+Hammer login and incident creation
+
+429
+
+NFR-SEC-03; P2
+
+TC-SEC-12
+
+Socket room abuse
+
+Join other incident, spoof sender, emit forbidden events
+
+All rejected
+
+Design 8; P1
+
+TC-SEC-13
+
+Oversized body
+
+JSON body above limit
+
+413
+
+NFR-SEC-03; P2
+
+TC-SEC-14
+
+Secrets hygiene
+
+Search repository history and files for secrets
+
+No secrets committed; .env ignored; .env.example only
+
+NFR-SEC-01; P1
+
+TC-SEC-15
+
+Suspended token blocked
+
+Use a still-valid token of a suspended user
+
+403
+
+BR-11; P1
+
+
+
+3.13 Frontend and Usability (UI) (manual and component tests)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+TC-UI-01
+
+ProtectedRoute
+
+Open /user/dashboard while logged out
+
+Redirect to /login
+
+FR-AUTH-07; P1
+
+TC-UI-02
+
+RoleRoute
+
+USER opens /admin/dashboard
+
+Redirect or forbidden screen
+
+FR-AUTH-07; P1
+
+TC-UI-03
+
+SOS flow
+
+Press SOS; also press then cancel inside the confirm window
+
+Incident created; cancel window prevents mis-press
+
+US-01; P1
+
+TC-UI-04
+
+Form validation messages
+
+Submit invalid report and register forms
+
+Clear inline messages from server errors
+
+NFR-USE-02; P1
+
+TC-UI-05
+
+Loading, empty, error states
+
+Visit every page with slow, empty and failing responses
+
+Spinner or skeleton, empty state, error with retry
+
+NFR-USE-02; P1
+
+TC-UI-06
+
+Severity and status badges
+
+View each level and status
+
+Colour and text both present
+
+NFR-ACC-01; P1
+
+TC-UI-07
+
+Live status update
+
+Two browsers: responder changes status
+
+User page updates without refresh
+
+US-03; P1
+
+TC-UI-08
+
+Already taken toast
+
+Two responder browsers accept the same incident
+
+Loser sees "already taken"; list updates
+
+US-06; P1
+
+TC-UI-09
+
+Map markers and bounds
+
+Open incident with user and responder
+
+Both markers shown; view fits both
+
+FR-LOC-03; P2
+
+TC-UI-10
+
+Chat behaviour
+
+Send many messages; close incident
+
+Auto-scroll; read-only when closed
+
+FR-CHAT-05; P2
+
+TC-UI-11
+
+Connection banner
+
+Go offline then online
+
+Banner appears and clears; data refreshed
+
+NFR-REL-01; P1
+
+TC-UI-12
+
+Responsive layouts
+
+Check 360, 768 and 1280 px widths
+
+No horizontal scroll; usable controls; bottom tabs on phones
+
+NFR-USE-01; P2
+
+TC-UI-13
+
+Keyboard and focus
+
+Operate main flows with keyboard only
+
+All controls reachable; visible focus
+
+NFR-ACC-01; P2
+
+TC-UI-14
+
+Contrast and motion
+
+Run Lighthouse; enable reduced motion
+
+Contrast passes; pulsing animation reduced
+
+NFR-ACC-01; P3
+
+TC-UI-15
+
+Silent token refresh
+
+Let the access token expire; use the app
+
+One silent refresh; user is not logged out
+
+D-04; P1
+
+TC-UI-16
+
+Disclaimer visible
+
+Open landing and SOS pages
+
+Emergency-number notice shown
+
+PRD 1; P2
+
+
+
+3.14 End-to-End Scenarios (E2E) (manual, three browser profiles)
+
+ID
+
+Scenario
+
+Steps / input
+
+Expected result
+
+Ref, Pri
+
+E2E-01
+
+Happy path SOS
+
+User SOS; responder accepts; chat; location updates; responder starts and resolves
+
+Each step updates the other screens live; history shows the full trail
+
+SC-01, SC-07; P1
+
+E2E-02
+
+Decline and reassign
+
+Admin assigns resp1; resp1 declines; admin assigns resp2
+
+Incident returns to PENDING then ASSIGNED; resp1 not offered again
+
+FR-RESP-07; P2
+
+E2E-03
+
+Accept race
+
+Two responders press Accept together
+
+One wins; other sees already taken
+
+SC-02; P1
+
+E2E-04
+
+User cancels
+
+User cancels while ACCEPTED
+
+Responder notified and becomes ONLINE; chat closes
+
+FR-INC-09; P1
+
+E2E-05
+
+Nobody online
+
+All responders offline; user SOS; admin assigns after responder goes online
+
+Admin alerted; assignment works
+
+BR-15; P2
+
+E2E-06
+
+Responder verification
+
+Register responder; try ONLINE; admin verifies; go ONLINE
+
+Blocked before verification; works after
+
+US-08; P1
+
+E2E-07
+
+Reconnect mid-incident
+
+Kill network for the user during acceptance
+
+After reconnect the screen shows the correct current state
+
+NFR-REL-01; P1
+
+E2E-08
+
+Location denied SOS
+
+Deny location; press SOS
+
+Incident created flagged; manual address flow
+
+FR-INC-11; P1
+
+
+
+4. Non-Functional Tests
+
+ID
+
+Area
+
+How to test
+
+Pass criteria
+
+TC-NF-01
+
+SOS latency
+
+Measure from button press to the alert appearing on a second browser (DevTools timestamps or logging) over several runs
+
+Typically about 2 seconds or better on normal broadband (NFR-PERF-01)
+
+TC-NF-02
+
+Query performance
+
+Seed thousands of incidents; run explain() on list, dashboard and nearby queries
+
+Queries use the intended indexes (IXSCAN, not full COLLSCAN)
+
+TC-NF-03
+
+Concurrent sockets
+
+Script that opens many socket.io-client connections (for example 50) and emits events
+
+No crashes; events delivered; memory stable
+
+TC-NF-04
+
+Pagination under load
+
+Request deep pages
+
+Response time stays reasonable; limit capped
+
+TC-NF-05
+
+Browser matrix
+
+Chrome, Edge, Firefox, Safari (if available), Android Chrome
+
+All main flows work
+
+TC-NF-06
+
+Accessibility
+
+Lighthouse and keyboard-only pass
+
+No critical issues
+
+TC-NF-07
+
+HTTPS and geolocation
+
+Use deployed HTTPS URL on a phone
+
+Location permission prompt and capture work
+
+TC-NF-08
+
+Restart durability
+
+Create data; restart server
+
+All data present (SC-04)
+
+5. Example Test Code
+
+Short templates to adapt. They assume Jest, Supertest and the helpers from section 2.
+
+Unit test: severity rules
+
+describe("severityService.compute", () => {
+
+  test.each([
+
+    [{ isSOS: true }, "HIGH"],
+
+    [{ isSOS: true, checklist: { breathing: false } }, "CRITICAL"],
+
+    [{ category: "FIRE" }, "HIGH"],
+
+    [{ category: "OTHER" }, "MEDIUM"],
+
+  ])("input %j gives %s", (input, expected) => {
+
+    expect(severityService.compute(input)).toBe(expected);
+
+  });
+
+});
+
+
+
+Unit test: transition matrix
+
+const ALL = ["PENDING","ASSIGNED","ACCEPTED","IN_PROGRESS",
+
+             "RESOLVED","CANCELLED","REJECTED"];
+
+test.each(ALL.flatMap(f => ALL.map(t => [f, t])))("%s -> %s", (from, to) => {
+
+  const allowed = (transitions[from] || []).includes(to);
+
+  expect(canTransition(from, to)).toBe(allowed);
+
+});
+
+
+
+Integration test: IDOR negative test
+
+test("user cannot read another user's incident", async () => {
+
+  const asha = await loginAs(users.asha);
+
+  const ravi = await loginAs(users.ravi);
+
+  const created = await asha.post("/api/incidents").send(validSOS);
+
+  const id = created.body.data.incident._id;
+
+  const res = await ravi.get(`/api/incidents/${id}`);
+
+  expect(res.status).toBe(404);
+
+  expect(JSON.stringify(res.body)).not.toContain(users.asha.email);
+
+});
+
+
+
+Concurrency test: exclusive claim
+
+test("only one responder can accept", async () => {
+
+  const inc = await createIncident(users.asha);
+
+  const [a, b] = await Promise.all([
+
+    resp1Agent.post(`/api/responders/incidents/${inc._id}/accept`),
+
+    resp2Agent.post(`/api/responders/incidents/${inc._id}/accept`),
+
+  ]);
+
+  const codes = [a.status, b.status].sort();
+
+  expect(codes).toEqual([200, 409]);
+
+  const fresh = await Incident.findById(inc._id);
+
+  expect(fresh.status).toBe("ACCEPTED");
+
+  expect(fresh.statusHistory.filter(h => h.status === "ACCEPTED")).toHaveLength(1);
+
+});
+
+
+
+Socket test: outsider cannot join
+
+test("non-participant cannot join incident room", async () => {
+
+  const inc = await createIncident(users.asha);
+
+  const outsider = await connectSocket(users.ravi);
+
+  outsider.emit("incident:join", inc._id);
+
+  const err = await waitForEvent(outsider, "error:event");
+
+  expect(err.code).toBe("FORBIDDEN");
+
+  await expectNoEvent(outsider, "chat:message", 500);
+
+});
+
+
+
+Note
+
+Test behaviour, not implementation details. "A second responder gets 409" is a stable assertion; "findOneAndUpdate was called once" breaks when you refactor.
+
+6. Testing by Development Phase
+
+Phase
+
+Tests to write
+
+Gate before moving on
+
+4 Backend foundation
+
+Health route; error middleware shape; env validation
+
+Server and test runner both start cleanly
+
+5 Authentication
+
+TC-AUTH all; relevant TC-SEC (JWT, cookies, injection, rate limit)
+
+All AUTH P1 pass
+
+6 Incident management
+
+TC-INC, TC-ACC, TC-SM, TC-CON; severity and transition unit tests
+
+All P1 pass; concurrency test green
+
+7 React frontend
+
+TC-UI-01 to 06, 15; component tests for guards, forms, badges
+
+Role flows usable end to end
+
+8 Real-time
+
+TC-CHAT-03, 04, 10 handshake and room tests; TC-RT-01 to 03
+
+Outsider tests green
+
+9 Maps and location
+
+TC-LOC all; coordinate-order unit test
+
+Marker position verified with a known landmark
+
+10 Chat and notifications
+
+TC-CHAT, TC-NOTIF
+
+All P1 pass
+
+11 Admin and analytics
+
+TC-ADM; aggregation tests with a fixture
+
+Counts match hand calculation
+
+12 Security hardening
+
+Full TC-SEC sweep; dependency audit; review of every route for ownership checks
+
+No open P1 security defects
+
+13 Testing
+
+Fill gaps, E2E-01 to 08, non-functional TC-NF, regression run
+
+Exit criteria in section 9 met
+
+14 Deployment
+
+Smoke test and E2E-01 on the live URL; TC-NF-07; cookie and CORS checks in production
+
+Live demo passes
+
+Do not wait for Phase 13 to start testing. Tests written while the code is fresh are cheaper, and they are what makes later refactors safe.
+
+7. Defect Management
+
+Severity
+
+Meaning
+
+Example
+
+Rule
+
+S1 Critical
+
+Security hole, data loss, core flow broken
+
+IDOR exposes incidents; two responders accepted
+
+Fix immediately; block release
+
+S2 Major
+
+Important feature wrong, no workaround
+
+Status not updating live
+
+Fix before release
+
+S3 Minor
+
+Feature works with a workaround or small error
+
+Toast text wrong
+
+Fix when convenient
+
+S4 Cosmetic
+
+Visual or wording
+
+Misaligned icon
+
+Backlog
+
+
+
+Bug report template
+
+ID:            BUG-001
+
+Title:         Short, specific description
+
+Severity:      S1 / S2 / S3 / S4        Found in: phase / test case ID
+
+Environment:   local / production; browser; role used
+
+Steps:         1) ...  2) ...  3) ...
+
+Expected:      ...
+
+Actual:        ... (include error code, console output, screenshot)
+
+Root cause:    (fill when found)
+
+Fix:           (commit hash or description)
+
+Regression test added: yes / no (test name)
+
+Lesson:        what to remember (also add to brain.md troubleshooting log)
+
+
+
+Every fixed bug gets a regression test where possible, and a line in the troubleshooting log in brain.md. Bugs you can explain clearly (symptom, cause, fix, prevention) are excellent interview material.
+
+8. Test Execution Log (Template)
+
+Date
+
+Build / commit
+
+Suite
+
+Passed
+
+Failed
+
+Notes / bug IDs
+
+
+
+
+
+Unit
+
+
+
+
+
+
+
+
+
+
+
+API integration
+
+
+
+
+
+
+
+
+
+
+
+Socket
+
+
+
+
+
+
+
+
+
+
+
+Frontend
+
+
+
+
+
+
+
+
+
+
+
+Manual E2E
+
+
+
+
+
+
+
+
+
+
+
+Security sweep
+
+
+
+
+
+
+
+9. Entry, Exit and Release Criteria
+
+Gate
+
+Criteria
+
+Feature complete
+
+Its P1 and P2 test cases pass; negative cases included; documented in the API reference and Code Guide
+
+Phase exit
+
+Gate in section 6 met; no open S1 or S2 defects for that phase
+
+Release candidate
+
+All P1 tests pass (automated and manual); E2E-01 to E2E-08 pass; no open S1 or S2; no secrets in repository; production environment variables set
+
+Demo ready
+
+Deployed smoke test passes; seed or demo accounts ready for user, two responders and admin; scripted demo flow rehearsed
+
+
+
+Regression checklist (run before every merge to main)
+
+Run the full automated suite; everything green.
+
+Run lint and format checks.
+
+Manually run E2E-01 locally if real-time or incident logic changed.
+
+Check that no console errors appear in the browser during the flow.
+
+Confirm no secrets or .env files are staged.
+
+10. Demo Script (also the final smoke test)
+
+Step
+
+Actor
+
+Action
+
+What to point out
+
+1
+
+Admin
+
+Log in; show dashboard; verify a new responder
+
+Role-based access; verification
+
+2
+
+Responder 1 and 2
+
+Log in on two browsers; go ONLINE
+
+Availability, only verified can go online
+
+3
+
+User
+
+Press SOS
+
+One tap; automatic location; instant alert
+
+4
+
+Both responders
+
+Both press Accept
+
+Atomic claim: one wins, other sees "already taken"
+
+5
+
+User and winner
+
+Chat; responder moves; marker moves
+
+Rooms, live location, privacy to participants
+
+6
+
+Responder
+
+Start, then Resolve
+
+State machine; history trail
+
+7
+
+Admin
+
+Open the incident history and analytics
+
+Audit trail, aggregation
+
+8
+
+You
+
+Show the tests passing and the CI badge (if set up)
+
+Engineering discipline
+
+11. Requirement-to-Test Traceability
+
+PRD group
+
+Test modules
+
+FR-AUTH
+
+TC-AUTH, TC-SEC, TC-UI-01, 02, 15
+
+FR-INC
+
+TC-INC, TC-ACC, TC-SM, TC-CON, TC-UI-03
+
+FR-RESP
+
+TC-RESP, TC-SM-04 to 08, TC-CON, E2E-02, 03, 06
+
+FR-ADM
+
+TC-ADM, TC-SM-01, TC-SM-16, TC-SM-21
+
+FR-CHAT
+
+TC-CHAT, TC-UI-10
+
+FR-LOC
+
+TC-LOC, TC-RESP-04, 06, TC-UI-09
+
+FR-NOTIF
+
+TC-NOTIF, TC-RT
+
+NFR-SEC and NFR-PRIV
+
+TC-SEC, TC-CHAT-02, TC-LOC-06
+
+NFR-PERF, NFR-REL, NFR-USE, NFR-ACC
+
+TC-NF, TC-RT, TC-UI
+
+Business rules BR-01 to BR-15
+
+Mostly TC-SM, TC-ACC, TC-RESP, TC-ADM, TC-CHAT; check each rule has at least one test
+
+12. Testing Interview Questions
+
+Question
+
+Strong answer outline
+
+What is the difference between unit, integration and end-to-end tests?
+
+Scope and speed: unit tests one function, integration tests several parts with a real database, E2E tests the whole system through the UI. Use many unit, fewer integration, few E2E.
+
+How do you test code that uses a database?
+
+Integration tests with an in-memory MongoDB and fresh data per test, never the real database.
+
+How did you test the concurrent accept?
+
+Fired parallel requests with Promise.all and asserted exactly one 200 and one 409, and exactly one history entry.
+
+How do you test authorization?
+
+Negative tests: for each endpoint call it as the wrong role and as the wrong owner and assert 403 or 404 with no data leaked.
+
+How do you test WebSockets?
+
+Connect multiple socket.io-client instances as different users and assert which receive which events; test rejected handshakes and room joins.
+
+What is a regression test?
+
+A test added after a bug is fixed so the bug cannot come back unnoticed.
+
+What is mocking and when did you use it?
+
+Replacing a dependency with a fake (for example the socket emitter or AI service) to isolate logic; avoid mocking the database in integration tests.
+
+What would you add with more time?
+
+CI pipeline, end-to-end tests with Playwright or Cypress, load tests, contract tests for the API.
+
+PART B: API REFERENCE
+
+13. Conventions
+
+Item
+
+Convention
+
+Base URL
+
+Development: http://localhost:5000/api. Production: your deployed origin + /api
+
+Format
+
+JSON request and response. Header: Content-Type: application/json (multipart only for image upload, Stretch)
+
+Authentication
+
+httpOnly cookies set by login (accessToken, refreshToken). Clients must send credentials: Axios withCredentials: true; fetch credentials: "include"; Postman keeps a cookie jar automatically
+
+Success envelope
+
+{ "success": true, "message": "text", "data": { ... } }
+
+Error envelope
+
+{ "success": false, "message": "text", "code": "ERROR_CODE", "errors": [ { "field": "email", "message": "Invalid email" } ] }  (errors only for validation)
+
+Pagination
+
+Request: ?page=1&limit=20 (limit max 100). Response data: { items, page, limit, total, totalPages }
+
+Sorting and filters
+
+?sort=-createdAt, ?status=PENDING&severity=HIGH&category=MEDICAL&from=2026-10-01&to=2026-10-31
+
+Dates
+
+ISO 8601 UTC, for example 2026-10-05T09:12:03Z
+
+IDs
+
+MongoDB ObjectId strings (24 hex characters); invalid format returns 400
+
+Location input
+
+{ "lat": 28.6139, "lng": 77.2090 } in requests; stored as GeoJSON [lng, lat]; responses return { "lat", "lng" } for convenience (decide once and keep consistent)
+
+Ignored fields
+
+Unknown or forbidden fields (role, severity, status, createdBy, incidentNumber, isActive) in request bodies are ignored or rejected
+
+
+
+13.1 Status codes
+
+Code
+
+Meaning in this API
+
+200
+
+Success
+
+201
+
+Resource created
+
+400
+
+Validation error or malformed input
+
+401
+
+Not authenticated or token expired
+
+403
+
+Authenticated but not allowed (role, suspended)
+
+404
+
+Not found, or hidden because the caller may not see it
+
+409
+
+Conflict: duplicate, invalid transition, already taken, state changed
+
+413
+
+Request body too large
+
+429
+
+Rate limit exceeded
+
+500
+
+Unexpected server error
+
+
+
+13.2 Error codes
+
+Code
+
+HTTP
+
+Meaning
+
+VALIDATION_ERROR
+
+400
+
+Input failed validation; see errors array
+
+UNAUTHENTICATED
+
+401
+
+Missing or invalid token
+
+TOKEN_EXPIRED
+
+401
+
+Access token expired; call POST /auth/refresh
+
+FORBIDDEN
+
+403
+
+Role or ownership not allowed
+
+ACCOUNT_SUSPENDED
+
+403
+
+Account inactive
+
+NOT_FOUND
+
+404
+
+Resource missing or hidden
+
+DUPLICATE
+
+409
+
+Unique value already used
+
+INVALID_TRANSITION
+
+409
+
+Status change not allowed from the current status
+
+ALREADY_TAKEN
+
+409
+
+Incident already claimed by another responder
+
+RESPONDER_UNAVAILABLE
+
+409
+
+Responder is not verified, not ONLINE, or is BUSY for this operation
+
+RATE_LIMITED
+
+429
+
+Too many requests
+
+SERVER_ERROR
+
+500
+
+Unexpected problem
+
+
+
+13.3 Reusable object shapes
+
+// User
+
+{ "_id": "66f1b8d0b7d3e4a1c8f90001", "name": "Asha Verma",
+
+  "email": "asha@example.com", "phone": "9876543210", "role": "USER",
+
+  "isActive": true, "createdAt": "2026-10-05T08:00:00Z" }
+
+ 
+
+// Responder (User plus profile)
+
+{ ...User, "role": "RESPONDER",
+
+  "responderProfile": { "verificationStatus": "VERIFIED", "availability": "ONLINE",
+
+    "specialization": ["MEDICAL"], "lastLocationAt": "2026-10-05T09:10:00Z" } }
+
+ 
+
+// Incident (summary)
+
+{ "_id": "66f1c0a2b7d3e4a1c8f90012", "incidentNumber": "CC-1024",
+
+  "category": "MEDICAL", "isSOS": true, "severity": "CRITICAL",
+
+  "status": "PENDING", "location": { "lat": 28.6139, "lng": 77.2090 },
+
+  "locationAvailable": true, "address": null,
+
+  "createdBy": { "_id": "...0001", "name": "Asha Verma" },
+
+  "assignedResponder": null, "createdAt": "2026-10-05T09:12:03Z" }
+
+ 
+
+// Incident (detail) adds: description, checklist, statusHistory[], cancelReason,
+
+// assignedAt, acceptedAt, resolvedAt; phone numbers only for participants/admin
+
+14. Authentication Endpoints
+
+POST /api/auth/register
+
+Purpose
+
+Create a citizen (USER) account.
+
+Access
+
+Public
+
+Requirements
+
+FR-AUTH-01, 02, 03, 06; BR-01
+
+Notes
+
+Role is always USER. Any role field is ignored.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+name
+
+string
+
+yes
+
+Trimmed, 2 to 60 characters
+
+email
+
+string
+
+yes
+
+Valid email; stored lowercase; unique
+
+phone
+
+string
+
+yes
+
+10 to 15 digits, optional country code
+
+password
+
+string
+
+yes
+
+Min 8 characters, at least one letter and one number
+
+Success response 201
+
+{ "success": true, "message": "Registered successfully",
+
+  "data": { "user": { "_id": "66f1b8d0b7d3e4a1c8f90001", "name": "Asha Verma", "email": "asha@example.com", "role": "USER" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Any field invalid or missing
+
+409
+
+DUPLICATE
+
+Email already registered
+
+429
+
+RATE_LIMITED
+
+Too many attempts
+
+
+
+POST /api/auth/register-responder
+
+Purpose
+
+Create a responder account that must be verified by an admin.
+
+Access
+
+Public
+
+Requirements
+
+FR-RESP-01
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+name, email, phone, password
+
+string
+
+yes
+
+Same rules as register
+
+specialization
+
+string[]
+
+no
+
+Values such as MEDICAL, FIRE, ACCIDENT, SECURITY
+
+Success response 201
+
+{ "success": true, "message": "Registered. Awaiting verification",
+
+  "data": { "user": { "_id": "...", "role": "RESPONDER",
+
+    "responderProfile": { "verificationStatus": "PENDING", "availability": "OFFLINE" } } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid input
+
+409
+
+DUPLICATE
+
+Email already registered
+
+
+
+POST /api/auth/login
+
+Purpose
+
+Authenticate and receive access and refresh cookies.
+
+Access
+
+Public
+
+Requirements
+
+FR-AUTH-04, 09, 10
+
+Notes
+
+Cookies: accessToken (about 15 minutes) and refreshToken (about 7 days), both httpOnly; Secure and SameSite set by environment. Wrong email and wrong password return the same message.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+email
+
+string
+
+yes
+
+Registered email
+
+password
+
+string
+
+yes
+
+Account password
+
+Success response 200
+
+Set-Cookie: accessToken=...; HttpOnly; ...
+
+Set-Cookie: refreshToken=...; HttpOnly; Path=/api/auth/refresh; ...
+
+{ "success": true, "message": "Logged in", "data": { "user": { "_id": "66f1b8d0b7d3e4a1c8f90001", "name": "Asha Verma", "email": "asha@example.com", "role": "USER" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Missing or malformed fields
+
+401
+
+UNAUTHENTICATED
+
+Invalid credentials
+
+403
+
+ACCOUNT_SUSPENDED
+
+Account inactive
+
+429
+
+RATE_LIMITED
+
+Too many attempts
+
+
+
+POST /api/auth/refresh
+
+Purpose
+
+Issue a new access token using the refresh cookie; rotates the refresh token.
+
+Access
+
+Refresh cookie
+
+Requirements
+
+D-04
+
+Request body: none
+
+Success response 200
+
+Set-Cookie: accessToken=...; Set-Cookie: refreshToken=... (rotated)
+
+{ "success": true, "message": "Token refreshed", "data": {} }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Missing, invalid, expired or revoked refresh token (cookies are cleared)
+
+
+
+POST /api/auth/logout
+
+Purpose
+
+End the session.
+
+Access
+
+Any authenticated user
+
+Requirements
+
+FR-AUTH-05
+
+Notes
+
+Clears both cookies and clears the stored refresh-token hash.
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "message": "Logged out", "data": {} }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+
+
+GET /api/auth/me
+
+Purpose
+
+Return the current user (used on app start).
+
+Access
+
+Any authenticated user
+
+Requirements
+
+FR-AUTH-07
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "message": "OK", "data": { "user": { "_id": "66f1b8d0b7d3e4a1c8f90001", "name": "Asha Verma", "email": "asha@example.com", "role": "USER" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED / TOKEN_EXPIRED
+
+No or expired token
+
+403
+
+ACCOUNT_SUSPENDED
+
+Account inactive
+
+
+
+15. User Endpoints
+
+GET /api/users/me
+
+Purpose
+
+Get own profile.
+
+Access
+
+Any authenticated user
+
+Requirements
+
+FR-AUTH-08
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "data": { "user": { "_id": "66f1b8d0b7d3e4a1c8f90001", "name": "Asha Verma", "email": "asha@example.com", "role": "USER" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+
+
+PATCH /api/users/me
+
+Purpose
+
+Update own name and phone.
+
+Access
+
+Any authenticated user
+
+Requirements
+
+FR-AUTH-08
+
+Notes
+
+Email and role cannot be changed here.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+name
+
+string
+
+no
+
+2 to 60 characters
+
+phone
+
+string
+
+no
+
+10 to 15 digits
+
+Success response 200
+
+{ "success": true, "message": "Profile updated", "data": { "user": { "_id": "66f1b8d0b7d3e4a1c8f90001", "name": "Asha Verma", "email": "asha@example.com", "role": "USER" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid input
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+
+
+PATCH /api/users/me/password
+
+Purpose
+
+Change own password.
+
+Access
+
+Any authenticated user
+
+Requirements
+
+FR-AUTH-08
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+currentPassword
+
+string
+
+yes
+
+Must match the current password
+
+newPassword
+
+string
+
+yes
+
+Same strength rules as register; must differ from current
+
+Success response 200
+
+{ "success": true, "message": "Password changed", "data": {} }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Weak or identical new password
+
+401
+
+UNAUTHENTICATED
+
+Current password wrong or not logged in
+
+
+
+GET /api/users/me/incidents
+
+Purpose
+
+List own incident history.
+
+Access
+
+USER
+
+Requirements
+
+FR-INC-10
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+page, limit
+
+integer
+
+no
+
+Pagination
+
+status
+
+string
+
+no
+
+Filter by status
+
+sort
+
+string
+
+no
+
+Default -createdAt
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { ...Incident summary } ],
+
+  "page": 1, "limit": 20, "total": 3, "totalPages": 1 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+403
+
+FORBIDDEN
+
+Not a USER
+
+
+
+16. Incident Endpoints
+
+POST /api/incidents
+
+Purpose
+
+Create an SOS or manual incident.
+
+Access
+
+USER
+
+Requirements
+
+FR-INC-01 to 04, 08, 11, 12; BR-02
+
+Notes
+
+The server sets createdBy, status (PENDING), severity, incidentNumber and statusHistory. Rate limited.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+isSOS
+
+boolean
+
+no
+
+Default false
+
+category
+
+string
+
+manual: yes
+
+MEDICAL, FIRE, ACCIDENT, CRIME_SECURITY, NATURAL_DISASTER, MISSING_PERSON, OTHER (SOS defaults to MEDICAL or OTHER by checklist)
+
+description
+
+string
+
+manual: yes
+
+Up to 1000 characters
+
+location
+
+object
+
+recommended
+
+{ lat: -90..90, lng: -180..180 }; omit if permission denied
+
+address
+
+string
+
+when no location
+
+Manual address
+
+checklist
+
+object
+
+no
+
+Booleans: conscious, breathing, severeBleeding, inDangerNow, injuries
+
+image
+
+file
+
+no
+
+Stretch; jpg/png/webp up to 5 MB (multipart)
+
+Success response 201
+
+{ "success": true, "message": "SOS created",
+
+  "data": { "incident": { "_id": "66f1c0a2b7d3e4a1c8f90012",
+
+    "incidentNumber": "CC-1024", "status": "PENDING", "severity": "CRITICAL",
+
+    "isSOS": true, "locationAvailable": true } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid category, coordinates or description
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+403
+
+FORBIDDEN
+
+Not a USER
+
+429
+
+RATE_LIMITED
+
+Too many incidents created
+
+
+
+GET /api/incidents
+
+Purpose
+
+List incidents visible to the caller (scoped by role).
+
+Access
+
+USER (own), RESPONDER (available or assigned), ADMIN (all)
+
+Requirements
+
+FR-INC-10, BR-08
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+page, limit
+
+integer
+
+no
+
+Pagination (limit max 100)
+
+status, severity, category
+
+string
+
+no
+
+Filters
+
+from, to
+
+date
+
+no
+
+Created-at range
+
+sort
+
+string
+
+no
+
+Default -createdAt
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { ...Incident summary } ], "page": 1,
+
+  "limit": 20, "total": 42, "totalPages": 3 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+400
+
+VALIDATION_ERROR
+
+Bad filter values
+
+
+
+GET /api/incidents/:id
+
+Purpose
+
+Get one incident with history and participant summaries.
+
+Access
+
+Creator, assigned responder, ADMIN (others get 404)
+
+Requirements
+
+FR-INC-10, NFR-PRIV-01
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "data": { "incident": { ...Incident detail,
+
+  "statusHistory": [ { "status": "PENDING", "changedBy": "...0001",
+
+    "at": "2026-10-05T09:12:03Z", "note": null } ],
+
+  "assignedResponder": { "_id": "...0007", "name": "Rahul", "phone": "..." } } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid id format
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+404
+
+NOT_FOUND
+
+Missing or not visible to caller
+
+
+
+PATCH /api/incidents/:id/status
+
+Purpose
+
+Move an incident to the next status (ACCEPTED to IN_PROGRESS, IN_PROGRESS to RESOLVED).
+
+Access
+
+Assigned RESPONDER or ADMIN
+
+Requirements
+
+FR-INC-05, 06, 07; FR-RESP-06; BR-05
+
+Notes
+
+Validated by the transition map and actor guard. Use /accept to claim, /assign and /cancel for those actions.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+status
+
+string
+
+yes
+
+IN_PROGRESS or RESOLVED (or others allowed to ADMIN by the transition table)
+
+note
+
+string
+
+no
+
+Up to 300 characters; stored in statusHistory
+
+Success response 200
+
+{ "success": true, "message": "Status updated",
+
+  "data": { "incident": { "_id": "...", "status": "IN_PROGRESS" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Unknown status
+
+403
+
+FORBIDDEN
+
+Caller is not the assigned responder or admin
+
+404
+
+NOT_FOUND
+
+Incident not visible
+
+409
+
+INVALID_TRANSITION
+
+Not allowed from current status, or state changed meanwhile
+
+
+
+POST /api/incidents/:id/assign
+
+Purpose
+
+Assign or reassign a responder.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-05; BR-03, BR-04
+
+Notes
+
+Allowed from PENDING or ASSIGNED. The previous responder (if any) is notified.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+responderId
+
+ObjectId
+
+yes
+
+Must be VERIFIED and ONLINE, and not already BUSY
+
+Success response 200
+
+{ "success": true, "message": "Responder assigned",
+
+  "data": { "incident": { "_id": "...", "status": "ASSIGNED",
+
+    "assignedResponder": "66f1b9e4b7d3e4a1c8f90007" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Bad id
+
+404
+
+NOT_FOUND
+
+Incident or responder not found
+
+409
+
+RESPONDER_UNAVAILABLE
+
+Responder unverified, offline or busy
+
+409
+
+INVALID_TRANSITION
+
+Incident is in a terminal or later state
+
+
+
+POST /api/incidents/:id/cancel
+
+Purpose
+
+Cancel an incident.
+
+Access
+
+Creator USER (before IN_PROGRESS) or ADMIN (any non-terminal)
+
+Requirements
+
+FR-INC-09; BR-07
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+reason
+
+string
+
+USER optional, ADMIN required for IN_PROGRESS
+
+Up to 300 characters
+
+Success response 200
+
+{ "success": true, "message": "Incident cancelled",
+
+  "data": { "incident": { "_id": "...", "status": "CANCELLED" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Not the creator or admin; or user cancelling after IN_PROGRESS
+
+404
+
+NOT_FOUND
+
+Not visible
+
+409
+
+INVALID_TRANSITION
+
+Already terminal
+
+
+
+PATCH /api/incidents/:id/severity
+
+Purpose
+
+Override severity with an audit entry.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-09; BR-02
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+severity
+
+string
+
+yes
+
+LOW, MEDIUM, HIGH, CRITICAL
+
+reason
+
+string
+
+yes
+
+Up to 300 characters
+
+Success response 200
+
+{ "success": true, "message": "Severity updated",
+
+  "data": { "incident": { "_id": "...", "severity": "HIGH" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid severity or missing reason
+
+403
+
+FORBIDDEN
+
+Not an admin
+
+404
+
+NOT_FOUND
+
+Incident not found
+
+409
+
+INVALID_TRANSITION
+
+Incident is terminal
+
+
+
+GET /api/incidents/:id/messages
+
+Purpose
+
+Load chat history of an incident.
+
+Access
+
+Creator, assigned responder, ADMIN
+
+Requirements
+
+FR-CHAT-04
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+before
+
+ObjectId
+
+no
+
+Cursor: return messages older than this message id
+
+limit
+
+integer
+
+no
+
+Default 30, max 100
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { "_id": "...", "incidentId": "...",
+
+  "senderId": "...0001", "senderName": "Asha Verma", "text": "I am near the gate",
+
+  "createdAt": "2026-10-05T09:13:10Z" } ], "hasMore": false } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+404
+
+NOT_FOUND
+
+Not a participant or incident missing
+
+
+
+17. Responder Endpoints
+
+PATCH /api/responders/status
+
+Purpose
+
+Set own availability.
+
+Access
+
+RESPONDER
+
+Requirements
+
+FR-RESP-03; BR-04, BR-10
+
+Notes
+
+BUSY is set only by the system. ONLINE requires verificationStatus VERIFIED.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+availability
+
+string
+
+yes
+
+ONLINE or OFFLINE
+
+Success response 200
+
+{ "success": true, "message": "Availability updated",
+
+  "data": { "responderProfile": { "availability": "ONLINE" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Not verified
+
+409
+
+RESPONDER_UNAVAILABLE
+
+Cannot go OFFLINE while BUSY
+
+
+
+PATCH /api/responders/location
+
+Purpose
+
+Update own latest location (also used outside incidents).
+
+Access
+
+RESPONDER
+
+Requirements
+
+FR-LOC-02
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+lat
+
+number
+
+yes
+
+-90 to 90
+
+lng
+
+number
+
+yes
+
+-180 to 180
+
+Success response 200
+
+{ "success": true, "message": "Location updated", "data": {} }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid coordinates
+
+403
+
+FORBIDDEN
+
+Not a responder
+
+
+
+GET /api/responders/incidents
+
+Purpose
+
+List incidents for the responder by scope.
+
+Access
+
+RESPONDER
+
+Requirements
+
+FR-RESP-04, 09
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+scope
+
+string
+
+yes
+
+available (PENDING, eligible, not declined), assigned (ASSIGNED, ACCEPTED, IN_PROGRESS), completed
+
+page, limit
+
+integer
+
+no
+
+Pagination
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { ...Incident summary, "distanceKm": 1.8 } ],
+
+  "page": 1, "limit": 20, "total": 2, "totalPages": 1 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Missing or unknown scope
+
+403
+
+FORBIDDEN
+
+Not a responder
+
+
+
+POST /api/responders/incidents/:id/accept
+
+Purpose
+
+Claim a PENDING incident or accept one assigned to you.
+
+Access
+
+RESPONDER (verified and ONLINE)
+
+Requirements
+
+FR-RESP-05; BR-03; SC-02
+
+Notes
+
+Uses one atomic conditional update; concurrent requests produce exactly one success.
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "message": "Incident accepted",
+
+  "data": { "incident": { "_id": "...", "status": "ACCEPTED" } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Incident assigned to someone else, or responder not eligible
+
+404
+
+NOT_FOUND
+
+Incident missing
+
+409
+
+ALREADY_TAKEN
+
+Another responder accepted first
+
+409
+
+INVALID_TRANSITION
+
+Incident no longer PENDING or ASSIGNED
+
+
+
+POST /api/responders/incidents/:id/decline
+
+Purpose
+
+Decline an assigned incident; it returns to the pool.
+
+Access
+
+Assigned RESPONDER
+
+Requirements
+
+FR-RESP-07; BR-12
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+reason
+
+string
+
+no
+
+Up to 300 characters
+
+Success response 200
+
+{ "success": true, "message": "Incident declined", "data": {} }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Not the assigned responder
+
+404
+
+NOT_FOUND
+
+Incident missing
+
+409
+
+INVALID_TRANSITION
+
+Incident is not ASSIGNED
+
+
+
+18. Notification Endpoints
+
+GET /api/notifications
+
+Purpose
+
+List own notifications with unread count.
+
+Access
+
+Any authenticated user
+
+Requirements
+
+FR-NOTIF-03
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+page, limit
+
+integer
+
+no
+
+Pagination
+
+unreadOnly
+
+boolean
+
+no
+
+Only unread
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { "_id": "...", "type": "INCIDENT_ACCEPTED",
+
+  "title": "Responder on the way", "message": "Rahul accepted CC-1024",
+
+  "relatedIncident": "...0012", "isRead": false, "createdAt": "..." } ],
+
+  "unreadCount": 3, "page": 1, "limit": 20, "total": 8 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+
+
+PATCH /api/notifications/:id/read
+
+Purpose
+
+Mark one notification as read.
+
+Access
+
+Owner
+
+Requirements
+
+FR-NOTIF-04
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "message": "Marked as read", "data": {} }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+404
+
+NOT_FOUND
+
+Missing or belongs to another user
+
+
+
+PATCH /api/notifications/read-all
+
+Purpose
+
+Mark all own notifications as read.
+
+Access
+
+Any authenticated user
+
+Requirements
+
+FR-NOTIF-04
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "message": "All marked as read", "data": { "updated": 3 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+401
+
+UNAUTHENTICATED
+
+Not logged in
+
+
+
+19. Admin Endpoints
+
+GET /api/admin/users
+
+Purpose
+
+List and search accounts.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-01
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+page, limit
+
+integer
+
+no
+
+Pagination
+
+role
+
+string
+
+no
+
+USER, RESPONDER, ADMIN
+
+isActive
+
+boolean
+
+no
+
+Active or suspended
+
+search
+
+string
+
+no
+
+Matches name or email
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { ...User } ], "page": 1, "limit": 20,
+
+  "total": 15, "totalPages": 1 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Not an admin
+
+
+
+GET /api/admin/responders
+
+Purpose
+
+List responders with verification and availability.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-01, 02
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+verificationStatus
+
+string
+
+no
+
+PENDING, VERIFIED, REJECTED
+
+availability
+
+string
+
+no
+
+ONLINE, OFFLINE, BUSY
+
+page, limit
+
+integer
+
+no
+
+Pagination
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { ...Responder } ], "page": 1, "limit": 20, "total": 4, "totalPages": 1 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Not an admin
+
+
+
+PATCH /api/admin/responders/:id/verify
+
+Purpose
+
+Verify or reject a responder.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-02; US-08
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+status
+
+string
+
+yes
+
+VERIFIED or REJECTED
+
+note
+
+string
+
+no
+
+Up to 300 characters
+
+Success response 200
+
+{ "success": true, "message": "Responder verified",
+
+  "data": { "responder": { "_id": "...", "responderProfile": { "verificationStatus": "VERIFIED" } } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid status
+
+404
+
+NOT_FOUND
+
+Not a responder or missing
+
+
+
+PATCH /api/admin/users/:id/status
+
+Purpose
+
+Suspend or reactivate an account.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-03; BR-11
+
+Notes
+
+An admin cannot suspend their own account. Suspension also clears the refresh token.
+
+Request body
+
+Field
+
+Type
+
+Required
+
+Rules
+
+isActive
+
+boolean
+
+yes
+
+false to suspend, true to reactivate
+
+reason
+
+string
+
+no
+
+Up to 300 characters
+
+Success response 200
+
+{ "success": true, "message": "Account updated", "data": { "user": { ...User } } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Invalid body or targeting self
+
+404
+
+NOT_FOUND
+
+User missing
+
+
+
+GET /api/admin/incidents
+
+Purpose
+
+List all incidents with filters.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-04
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+status, severity, category
+
+string
+
+no
+
+Filters
+
+from, to
+
+date
+
+no
+
+Created-at range
+
+page, limit, sort
+
+mixed
+
+no
+
+Pagination and sorting
+
+Success response 200
+
+{ "success": true, "data": { "items": [ { ...Incident summary } ], "page": 1, "limit": 20, "total": 120, "totalPages": 6 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Not an admin
+
+
+
+GET /api/admin/dashboard
+
+Purpose
+
+Live operational counts.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-07
+
+Request body: none
+
+Success response 200
+
+{ "success": true, "data": { "activeIncidents": 7, "criticalIncidents": 2,
+
+  "unassignedCritical": 1, "availableResponders": 5, "resolvedToday": 12 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+403
+
+FORBIDDEN
+
+Not an admin
+
+
+
+GET /api/admin/analytics
+
+Purpose
+
+Aggregated statistics for a date range.
+
+Access
+
+ADMIN
+
+Requirements
+
+FR-ADM-08
+
+Query parameters
+
+Parameter
+
+Type
+
+Required
+
+Description
+
+from, to
+
+date
+
+no
+
+Default last 30 days
+
+Success response 200
+
+{ "success": true, "data": { "byCategory": [ { "category": "MEDICAL", "count": 18 } ],
+
+  "bySeverity": [ { "severity": "HIGH", "count": 20 } ],
+
+  "byStatus": [ { "status": "RESOLVED", "count": 30 } ],
+
+  "daily": [ { "date": "2026-10-04", "count": 6 } ],
+
+  "avgResponseSeconds": 95, "avgResolutionSeconds": 1480 } }
+
+Errors
+
+HTTP
+
+Code
+
+When
+
+400
+
+VALIDATION_ERROR
+
+Bad dates
+
+403
+
+FORBIDDEN
+
+Not an admin
+
+
+
+20. Socket.IO Reference
+
+Connection: connect to the server origin with credentials so the access-token cookie is sent. In the browser: io(SOCKET_URL, { withCredentials: true }). An invalid or missing token rejects the connection (connect_error). After connecting the server automatically places the socket in user:<id> and the relevant role rooms.
+
+20.1 Server to client
+
+Event
+
+Payload
+
+Delivered to
+
+incident:new
+
+{ incidentId, incidentNumber, category, severity, isSOS, location: {lat,lng}, createdAt }
+
+Eligible ONLINE responders; admins
+
+incident:updated
+
+{ incidentId, status, assignedResponder: { _id, name } | null, severity, at }
+
+incident:<id> room; admins
+
+incident:taken
+
+{ incidentId }
+
+Other eligible responders
+
+responder:location
+
+{ incidentId, lat, lng, at }
+
+incident:<id> room
+
+chat:message
+
+{ _id, incidentId, senderId, senderName, text, createdAt }
+
+incident:<id> room
+
+notification:new
+
+{ _id, type, title, message, relatedIncident, createdAt }
+
+user:<id> room
+
+error:event
+
+{ code, message, event }
+
+Only the emitting socket
+
+
+
+20.2 Client to server
+
+Event
+
+Payload
+
+Server checks and result
+
+incident:join
+
+{ incidentId }
+
+Participant or admin, else error:event FORBIDDEN; joins incident:<id>
+
+incident:leave
+
+{ incidentId }
+
+Leaves the room
+
+chat:send
+
+{ incidentId, text }
+
+Participant, incident active, text 1 to 500 characters; saves, then emits chat:message
+
+responder:location
+
+{ incidentId, lat, lng }
+
+Sender is assignedResponder; status ACCEPTED or IN_PROGRESS; valid coordinates; rate limited; updates profile and emits to room
+
+
+
+Client usage example
+
+const socket = io(import.meta.env.VITE_SOCKET_URL, { withCredentials: true });
+
+socket.on("connect_error", err => { /* not logged in or token invalid */ });
+
+socket.emit("incident:join", { incidentId });
+
+socket.on("incident:updated", payload => { /* replace by id in state */ });
+
+// cleanup in useEffect return:
+
+return () => { socket.emit("incident:leave", { incidentId });
+
+               socket.off("incident:updated"); };
+
+21. Postman Guide
+
+Item
+
+Setup
+
+Environments
+
+Create "Local" (baseUrl = http://localhost:5000/api) and "Production" (baseUrl = deployed URL + /api)
+
+Collection layout
+
+Folders matching sections 14 to 19: Auth, Users, Incidents, Responders, Notifications, Admin
+
+Cookies
+
+Postman stores cookies per domain; log in once per role. Use separate Postman windows or environments (or cookie clearing) to switch between USER, RESPONDER and ADMIN
+
+Variables
+
+Save ids from responses: incidentId, responderId, userId
+
+Negative requests
+
+For each endpoint add requests that must fail: wrong role, other user's id, bad body
+
+Export
+
+Export the collection into the repository docs folder as living documentation
+
+
+
+Example test scripts (Tests tab)
+
+// after POST {{baseUrl}}/incidents
+
+pm.test("created", () => pm.response.to.have.status(201));
+
+const body = pm.response.json();
+
+pm.test("server controls fields", () => {
+
+  pm.expect(body.data.incident.status).to.eql("PENDING");
+
+  pm.expect(body.data.incident.incidentNumber).to.match(/^CC-/);
+
+});
+
+pm.environment.set("incidentId", body.data.incident._id);
+
+ 
+
+// negative: another user reads it
+
+pm.test("hidden from others", () => pm.response.to.have.status(404));
+
+
+
+Socket.IO can be explored with Postman's Socket.IO request type if available in your version, or with a small Node script using socket.io-client. Automated socket tests belong in Jest (see section 5).
+
+22. API Verification Checklist
+
+Tick each column when done. "Contract" means the real behaviour matches this document.
+
+Endpoint
+
+Implemented
+
+Success test
+
+Failure tests
+
+Postman saved
+
+Contract
+
+POST /auth/register
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /auth/register-responder
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /auth/login
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /auth/refresh
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /auth/logout
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /auth/me
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /users/me
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /users/me
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /users/me/password
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /users/me/incidents
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /incidents
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /incidents
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /incidents/:id
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /incidents/:id/status
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /incidents/:id/assign
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /incidents/:id/cancel
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /incidents/:id/severity
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /incidents/:id/messages
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /responders/status
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /responders/location
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /responders/incidents
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /responders/incidents/:id/accept
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+POST /responders/incidents/:id/decline
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /notifications
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /notifications/:id/read
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /notifications/read-all
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /admin/users
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /admin/responders
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /admin/responders/:id/verify
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+PATCH /admin/users/:id/status
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /admin/incidents
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /admin/dashboard
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+GET /admin/analytics
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+[ ]
+
+
+
+API change log
+
+Date
+
+Change
+
+Reason
+
+Docs updated
+
+2026-10-05
+
+Initial contract created from the Design Document
+
+Baseline
+
+This document
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,21 @@
+export const VERIFICATION_STATUSES = {
+  PENDING: 'PENDING',
+  VERIFIED: 'VERIFIED',
+  REJECTED: 'REJECTED',
+};
+
+export const AVAILABILITY = {
+  ONLINE: 'ONLINE',
+  OFFLINE: 'OFFLINE',
+  BUSY: 'BUSY',
+};
+
+export const RESPONDER_TYPES = {
+  PROFESSIONAL: 'PROFESSIONAL',
+  VOLUNTEER: 'VOLUNTEER',
+};
+
+export const RESPONDER_TYPE_LABELS = {
+  PROFESSIONAL: 'Professional',
+  VOLUNTEER: 'Volunteer',
+};

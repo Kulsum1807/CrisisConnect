@@ -1,0 +1,2232 @@
+CrisisConnect
+
+Architecture and Tools Document
+
+How the system is structured, and which tools build it and why
+
+Real-Time Emergency Response and Incident Management Platform
+
+Full-Stack MERN Application
+
+Version 1.0 | Part A: Architecture | Part B: Tools | Companion to the PRD and Design Document
+
+
+
+Document Guide
+
+The PRD says what, the Design Document says how it behaves, and this document says how it is built and with what. Part A explains the structure of the system: layers, folders, request flow, real-time architecture and deployment. Part B explains every tool and library: why it was chosen, what problem it solves, where it is used, and which alternatives were rejected.
+
+Part
+
+Sections
+
+Use it when
+
+A: Architecture
+
+1 to 13
+
+Setting up folders, deciding where code belongs, explaining the system in an interview
+
+B: Tools
+
+14 to 20
+
+Installing packages, justifying technology choices, preparing "why X instead of Y" answers
+
+Closing
+
+21 to 22
+
+Open decisions and a revision sheet
+
+
+
+Note
+
+Versions are deliberately not fixed here. Use the current LTS release of Node.js and the latest stable versions of each package when you start, then pin them in package.json. Hosting plans and free-tier limits change often, so check the provider's current terms before choosing.
+
+PART A: ARCHITECTURE
+
+1. Architecture Overview
+
+1.1 Architectural goals
+
+Goal
+
+What it means for CrisisConnect
+
+Architectural answer
+
+Correctness under concurrency
+
+Two responders must not accept the same incident
+
+Atomic conditional updates in a single service function
+
+Security
+
+Role and ownership always enforced
+
+Middleware chain plus service-layer checks; same checks for sockets
+
+Real-time responsiveness
+
+Alerts and updates in about 2 seconds
+
+Socket.IO rooms layered on the same server as REST
+
+Resilience
+
+Screens recover after dropped connections
+
+Database as source of truth; REST re-fetch after reconnect
+
+Maintainability
+
+One developer must understand and extend it
+
+Layered monolith with strict separation of concerns
+
+Explainability
+
+Every part defensible in an interview
+
+Few moving parts; clear layer responsibilities
+
+Testability
+
+Logic testable without starting a server
+
+Services independent of Express; app.js separate from server.js
+
+
+
+1.2 Architectural style
+
+CrisisConnect is a client-server, layered monolith with a real-time channel:
+
+Client-server: a React single-page application talks to a Node.js backend.
+
+Layered backend: routes, middleware, controllers, services, models. Each layer talks only to the one below it.
+
+Monolith: one backend codebase and one deployable unit, which keeps development, debugging and hosting simple.
+
+Dual communication: REST over HTTP for request-response operations, Socket.IO (WebSocket) for server-pushed events.
+
+Single database: MongoDB Atlas, accessed only through Mongoose models.
+
+Interview angle
+
+"Why not microservices?" A single developer, one domain and modest load do not justify the cost of distributed systems (network calls, deployment, tracing, data consistency). A modular monolith with clean boundaries can be split later if needed. Saying this shows judgement, not a lack of knowledge.
+
+2. System Context
+
+The context diagram shows the system as one box and what surrounds it. Anything outside the box is an actor or an external dependency.
+
++-------------- ACTORS (browsers: phone or laptop) --------------+
+
+| USER (citizen)      RESPONDER (verified)      ADMIN (operator) |
+
++----------------------------------------------------------------+
+
+                      |  HTTPS (REST)  /  WSS (real-time)
+
+                      v
+
++------------------------ CrisisConnect -------------------------+
+
+| React SPA  +  Node.js / Express / Socket.IO (one server)       |
+
++----------------------------------------------------------------+
+
+        |                         |                        |
+
+        v                         v                        v
+
++------------------------ MongoDB Atlas -------------------------+
+
+| users, incidents, messages, notifications, counters            |
+
++----------------------------------------------------------------+
+
++---------------- External and optional services ----------------+
+
+| OpenStreetMap tiles (via Leaflet): map background              |
+
+| Image storage, e.g. Cloudinary (Stretch): evidence photos      |
+
+| AI service (Stretch): suggested severity only                  |
+
++----------------------------------------------------------------+
+
+Browser APIs used: Geolocation API (position), WebSocket (real-time).
+
+
+
+External dependency
+
+Used for
+
+If it fails
+
+MongoDB Atlas
+
+All persistent data
+
+System unavailable; show a clear error and the emergency-number notice
+
+OpenStreetMap tile servers
+
+Map background
+
+Map tiles blank; markers, lists and the SOS still work
+
+Browser Geolocation API
+
+User and responder position
+
+Manual address fallback; SOS still created
+
+Image storage (Stretch)
+
+Evidence photos
+
+Report is created without the image
+
+AI service (Stretch)
+
+Suggested severity only
+
+Ignored; rule-based severity is unaffected
+
+3. High-Level Architecture
+
++----------------------------- BROWSER ------------------------------+
+
+| React SPA                                                          |
+
+|  Pages / Components   Contexts (Auth, Socket)   Hooks              |
+
+|  services/api.js (Axios)        sockets/socket.js (Socket.IO)      |
+
+|  React Leaflet map              Geolocation API                    |
+
++--------------------------------------------------------------------+
+
+        |  HTTPS (REST, cookies)              |  WSS (WebSocket)
+
+        v                                     v
+
++------------------- NODE.JS SERVER (one process) -------------------+
+
+| Express app                        Socket.IO server                |
+
+|  helmet, cors, rate limit,         auth middleware (handshake)     |
+
+|   cookie-parser                    incidentSocket, chatSocket,     |
+
+|  routes -> protect/authorize/       locationSocket                 |
+
+|   validate                                                         |
+
+|  controllers (thin)                                                |
+
+|         \                                 |                        |
+
+|          +-------> SERVICES <--------------+                       |
+
+|   incidentService, responderService, notificationService,          |
+
+|   severityService, authService, chatService, analyticsService      |
+
+|                        |                                           |
+
+|                 MONGOOSE MODELS                                    |
+
++--------------------------------------------------------------------+
+
+                              |
+
+                              v
+
++-------------------------- MongoDB Atlas ---------------------------+
+
+| users, incidents, messages, notifications, counters                |
+
++--------------------------------------------------------------------+
+
+
+
+The key idea: controllers (HTTP) and socket handlers (events) are two different "front doors" into the same services. All business rules live in services, so a status change behaves identically whether it came from a REST call or a socket event.
+
+4. Layer Responsibilities
+
+Layer
+
+Responsibility
+
+Must NOT
+
+Routes
+
+Map URL and method to middleware and a controller
+
+Contain logic
+
+Middleware
+
+Cross-cutting checks: authentication, role, validation, rate limit, errors
+
+Make business decisions
+
+Controllers
+
+Read the request, call one service, shape the HTTP response
+
+Talk to the database directly; hold business rules
+
+Services
+
+Business rules: state transitions, severity, assignment, notifications, ownership checks
+
+Know about req/res objects
+
+Models
+
+Schema, validation, indexes, small instance helpers
+
+Call services
+
+Socket handlers
+
+Authenticate sockets, join rooms, receive events, call services, emit events
+
+Duplicate rules that exist in services
+
+Utils / constants
+
+Token helpers, AppError, enums, transition map, severity table
+
+Hold state
+
+
+
+Why this design
+
+Separating controllers from services means the same logic is reusable by REST and sockets, and can be unit-tested without HTTP. It also answers the interview question "where does your business logic live?" in one sentence.
+
+4.1 Dependency rule
+
+routes -> middleware -> controllers -> services -> models -> MongoDB
+
+                   sockets -----------> services
+
+Dependencies point downward only. A service never imports a controller.
+
+5. Backend Architecture
+
+5.1 Folder structure
+
+backend/
+
+  src/
+
+    config/         db.js (Mongoose connect), env.js (validated env variables)
+
+    constants/      statuses.js, roles.js, categories.js, transitions.js,
+
+                    severityRules.js
+
+    models/         User.js, Incident.js, Message.js, Notification.js, Counter.js
+
+    validators/     authSchemas.js, incidentSchemas.js, chatSchemas.js, ...
+
+    middleware/     authMiddleware.js (protect), roleMiddleware.js (authorize),
+
+                    validate.js, rateLimiters.js, errorMiddleware.js, notFound.js
+
+    routes/         authRoutes.js, userRoutes.js, incidentRoutes.js,
+
+                    responderRoutes.js, notificationRoutes.js, adminRoutes.js
+
+    controllers/    authController.js, userController.js, incidentController.js,
+
+                    responderController.js, notificationController.js,
+
+                    adminController.js
+
+    services/       authService.js, incidentService.js, severityService.js,
+
+                    responderService.js, notificationService.js, chatService.js,
+
+                    analyticsService.js
+
+    sockets/        index.js (setup + auth), incidentSocket.js, chatSocket.js,
+
+                    locationSocket.js
+
+    utils/          AppError.js, asyncHandler.js, generateToken.js, apiResponse.js,
+
+                    logger.js
+
+    app.js          builds the Express app (no listen)
+
+    server.js       creates HTTP server, attaches Socket.IO, connects DB, listens
+
+  scripts/          seedAdmin.js
+
+  tests/            unit/ and integration/
+
+  .env.example
+
+  package.json
+
+
+
+Why app.js and server.js are separate: app.js exports the configured Express app so tests (Supertest) can call it without opening a network port; server.js starts the real server and Socket.IO. This is a small detail that interviewers like.
+
+5.2 Middleware order in app.js
+
+Order
+
+Middleware
+
+Purpose
+
+1
+
+helmet()
+
+Secure HTTP headers
+
+2
+
+cors({ origin: CLIENT_URL, credentials: true })
+
+Allow only the known client, with cookies
+
+3
+
+express.json({ limit })
+
+Parse JSON with a size limit
+
+4
+
+cookie-parser
+
+Read httpOnly cookies
+
+5
+
+request logger
+
+Log method, path, status, time
+
+6
+
+sanitize input
+
+Strip $ and . keys (NoSQL injection)
+
+7
+
+global rate limiter
+
+Basic abuse protection (stricter on auth and incident creation)
+
+8
+
+routes under /api
+
+Each route adds protect, authorize, validate
+
+9
+
+notFound
+
+Unknown route returns 404 envelope
+
+10
+
+errorMiddleware (last)
+
+Converts any error to the standard error envelope
+
+
+
+5.3 Request lifecycle (REST)
+
+POST /api/incidents
+
+  -> helmet/cors/json/cookies/limiter
+
+  -> incidentRoutes: protect -> authorize("USER") -> validate(createIncidentSchema)
+
+  -> incidentController.create (reads req.user and req.body, calls service)
+
+  -> incidentService.createIncident(user, input)
+
+       - severityService.compute(input)
+
+       - Counter.findOneAndUpdate({_id:"incident"},{$inc:{seq:1}})  // number
+
+       - Incident.create({... status: "PENDING", statusHistory:[...]})
+
+       - responderService.findEligible(incident)  // $near query
+
+       - notificationService.notify(responders, ...) + io.emit(incident:new)
+
+  <- controller sends 201 { success, message, data }
+
+  (any thrown AppError -> errorMiddleware -> error envelope)
+
+
+
+5.4 The most important service: incidentService
+
+Function
+
+Role
+
+createIncident(user, input)
+
+Validate rules, compute severity, generate number, save, alert responders
+
+transitionIncident(id, toStatus, actor, note)
+
+The single door for every status change: checks the allowed-transition map and actor guard, performs the conditional update, appends statusHistory, triggers notifications and socket emits
+
+claimIncident(id, responder)
+
+Atomic PENDING to ACCEPTED claim; returns "already taken" when no document matches
+
+assignIncident(id, admin, responderId)
+
+Admin assignment with responder validity checks
+
+declineIncident(id, responder)
+
+Return to PENDING and add to declinedBy
+
+cancelIncident(id, actor, reason)
+
+Cancellation rules by role and status
+
+getIncidentForUser(id, user)
+
+Fetch with ownership/role check; throws NOT_FOUND when not allowed
+
+listIncidents(user, filters, page)
+
+Role-scoped list built into the database query
+
+
+
+5.5 Socket architecture inside the backend
+
+server.js:  http.createServer(app) -> new Server(httpServer, { cors })
+
+            -> io.use(authMiddleware)           // verify cookie token, attach user
+
+            -> io.on("connection", socket => {
+
+                 join user:<id>, role rooms
+
+                 registerIncidentSocket(io, socket)   // join/leave incident rooms
+
+                 registerChatSocket(io, socket)       // chat:send
+
+                 registerLocationSocket(io, socket)   // responder:location
+
+                 socket.on("disconnect", ...)         // responder grace period
+
+               })
+
+services receive the io instance (or an emitter helper) to publish events.
+
+
+
+Services emit events through a small emitter helper (for example realtime.emitToIncident(id, event, payload)). This keeps services free of Socket.IO details and makes them easy to test by mocking the helper.
+
+6. Frontend Architecture
+
+6.1 Folder structure
+
+frontend/
+
+  src/
+
+    assets/         images, icons
+
+    components/
+
+      common/       Button, Input, Modal, ConfirmDialog, Toast, Spinner, EmptyState
+
+      layout/       Navbar, Sidebar, BottomTabBar, ConnectionIndicator
+
+      incidents/    SOSButton, IncidentCard, StatusBadge, SeverityBadge,
+
+                    StatusTimeline, ReportForm, ResponderCard
+
+      map/          IncidentMap, MarkerIcons, LocationPicker
+
+      chat/         ChatPanel, MessageBubble
+
+      admin/        MetricCard, DataTable, VerifyDialog, AssignDialog, Charts
+
+    pages/
+
+      public/       Landing, Login, Register, RegisterResponder, About
+
+      user/         Dashboard, Report, Incidents, IncidentDetails, Profile
+
+      responder/    Dashboard, Incidents, IncidentDetails, Profile
+
+      admin/        Dashboard, Users, Responders, Incidents, Analytics
+
+    layouts/        PublicLayout, UserLayout, ResponderLayout, AdminLayout
+
+    context/        AuthContext.jsx, SocketContext.jsx
+
+    hooks/          useAuth, useSocket, useIncident, useIncidents,
+
+                    useNotifications, useGeolocation, useDebounce
+
+    services/       api.js (Axios instance), authService, incidentService,
+
+                    responderService, adminService, notificationService
+
+    sockets/        socket.js (create/connect/disconnect), events.js (constants)
+
+    routes/         AppRoutes.jsx, ProtectedRoute.jsx, RoleRoute.jsx
+
+    constants/      roles, statuses, categories, colors
+
+    utils/          formatDate, formatDistance, getErrorMessage
+
+    App.jsx  main.jsx  index.css
+
+  .env.example      VITE_API_URL, VITE_SOCKET_URL
+
+
+
+6.2 Layers on the frontend
+
+Layer
+
+Responsibility
+
+Rule
+
+Pages
+
+Compose components for one route; fetch data via hooks
+
+Little styling logic
+
+Components
+
+Reusable UI pieces driven by props
+
+No direct API calls; receive data and callbacks
+
+Hooks
+
+Data fetching, subscriptions, device APIs (useIncident, useGeolocation)
+
+Own loading and error state
+
+Context
+
+Truly global state: current user, socket connection
+
+Keep small; avoid putting all data here
+
+Services
+
+Functions that call the REST API through the Axios instance
+
+Return data, not JSX
+
+Sockets
+
+Connection setup and event name constants
+
+Components subscribe through hooks
+
+
+
+6.3 Routing and access control
+
+<AppRoutes>
+
+  public:     /  /login  /register  /register-responder  /about
+
+  <ProtectedRoute>                     // logged in?  else -> /login
+
+    <RoleRoute allow=["USER"]>      <UserLayout>      /user/...
+
+    <RoleRoute allow=["RESPONDER"]> <ResponderLayout> /responder/...
+
+    <RoleRoute allow=["ADMIN"]>     <AdminLayout>     /admin/...
+
+
+
+After login the user is redirected to the dashboard of their role. These guards improve user experience only; the server enforces real security.
+
+6.4 API layer and interceptors
+
+One Axios instance with baseURL from VITE_API_URL and withCredentials: true so httpOnly cookies are sent.
+
+Response interceptor: on code TOKEN_EXPIRED call POST /api/auth/refresh once, then retry the original request; on UNAUTHENTICATED clear auth state and go to login.
+
+A getErrorMessage helper converts the standard error envelope into text for toasts and form errors.
+
+6.5 Data flow of a live screen (user incident details)
+
+IncidentDetails page mounts
+
+  -> useIncident(id): GET /api/incidents/:id  -> state {incident, loading, error}
+
+  -> socket.emit("incident:join", id)         -> joins room incident:<id>
+
+  -> on "incident:updated": merge or re-fetch  -> UI updates
+
+  -> on "responder:location": update marker position state
+
+  -> on "chat:message": append to ChatPanel
+
+  -> on reconnect: re-fetch incident, messages, notifications; rejoin room
+
+Page unmounts -> socket.emit("incident:leave"), remove listeners
+
+
+
+Interview angle
+
+"How do you avoid stale or duplicated state with sockets?" Treat socket events as hints, make updates idempotent (replace by id, never blindly append), clean listeners on unmount, and re-fetch from REST after reconnect.
+
+7. Real-Time Architecture
+
+7.1 Why both REST and Socket.IO
+
+Concern
+
+REST
+
+Socket.IO
+
+Direction
+
+Client asks, server answers
+
+Server can push to clients at any time
+
+Used for
+
+Login, create incident, history, admin actions, data loading
+
+New incident alerts, status changes, chat, live location, notifications
+
+Strength
+
+Simple, cacheable, easy to test and secure
+
+Low latency without polling
+
+Weakness for this app
+
+Polling would be wasteful and slow
+
+State can be missed during disconnects
+
+
+
+7.2 Transport and connection
+
+Socket.IO attaches to the same HTTP server as Express, so one port and one deployment.
+
+It prefers WebSocket and can fall back to HTTP long-polling when WebSockets are blocked.
+
+Authentication happens once in the connection handshake using the same httpOnly access-token cookie.
+
+The client creates one socket per session in SocketContext, connected after login and closed on logout.
+
+7.3 Room model
+
+Room
+
+Members
+
+Used for
+
+user:<userId>
+
+All sockets of one user
+
+Personal notifications, direct alerts, assignment messages
+
+responders:online
+
+Verified ONLINE responders
+
+Broadcast of new incidents when no location filter is used
+
+admins
+
+All admin sockets
+
+Critical alerts, dashboard live updates
+
+incident:<incidentId>
+
+Creator, assigned responder, admins who joined
+
+Status updates, chat, live location
+
+
+
+7.4 Event lifecycle example: responder accepts
+
+1 Responder clicks Accept -> REST POST /api/responders/incidents/:id/accept
+
+2 incidentService.claimIncident -> atomic update succeeds
+
+3 service -> emit incident:updated to incident:<id> and admins
+
+4 service -> emit incident:taken to other eligible responders (remove from lists)
+
+5 service -> create notification for the user + emit notification:new to user:<id>
+
+6 User screen updates status, shows responder card, chat opens
+
+
+
+Design choice: state-changing actions go through REST (so they get validation, authentication middleware and clear status codes) and the server then broadcasts the result. Chat and location use socket events directly because they are high-frequency and low-risk, but they still verify identity and room membership on the server.
+
+7.5 Failure handling
+
+Situation
+
+Handling
+
+Client loses connection
+
+Show a reconnecting banner; Socket.IO retries automatically with backoff
+
+Client reconnects
+
+Re-fetch incident, messages and notifications over REST; rejoin rooms
+
+Responder disconnects
+
+Grace period (30 to 60 seconds), then mark OFFLINE and stop alerting
+
+Server restarts
+
+Clients reconnect; no data lost because data is in MongoDB
+
+Event missed
+
+Harmless: the next REST fetch shows the truth
+
+Duplicate event
+
+Handlers are idempotent (replace by id)
+
+
+
+7.6 Scaling path (explain, do not build)
+
+One Node process is enough for the project. If scaling were required: run several server instances behind a load balancer, add the Socket.IO Redis adapter so events reach sockets on other instances, and use sticky sessions if long-polling is allowed. Mentioning this path in an interview shows awareness without building unnecessary complexity.
+
+8. Data Architecture
+
+Topic
+
+Decision
+
+Database
+
+MongoDB on Atlas; document model fits incidents with embedded history and GeoJSON
+
+Access
+
+Only through Mongoose models in services; connection created once in config/db.js
+
+Consistency
+
+Single-document atomic operations (findOneAndUpdate with a status condition) are enough; no multi-document transactions are needed in the core flow
+
+Geospatial
+
+2dsphere indexes on incident location and responder current location; $near / $geoNear queries
+
+Analytics
+
+MongoDB aggregation pipelines ($match, $group, $project) run on demand for the admin dashboard
+
+Growth control
+
+Pagination everywhere; messages and notifications are separate collections; optional TTL index for a location trail
+
+Indexes
+
+As listed in the Design Document; verify with explain() while developing
+
+Backups
+
+Atlas provides backup options depending on plan; check current tier features. Not critical for a demo project
+
+
+
+Interview angle
+
+"How does your system handle two simultaneous accepts?" Walk through the conditional findOneAndUpdate, explain that MongoDB applies single-document updates atomically, and that the loser gets null and returns 409.
+
+9. Location and Map Architecture
+
+Device GPS -> navigator.geolocation (watchPosition for responder) -> useGeolocation hook
+
+   -> user: lat,lng sent with POST /api/incidents
+
+   -> responder: throttled (5-10 s) -> socket responder:location
+
+        -> server validates -> updates responderProfile.currentLocation
+
+        -> emits to incident:<id> -> user IncidentMap moves the marker
+
+Map: React Leaflet MapContainer + TileLayer (OpenStreetMap) + Markers
+
+
+
+Coordinate order: GeoJSON and MongoDB use [longitude, latitude]; Leaflet uses [latitude, longitude]. Convert in one utility function to avoid the classic bug of markers appearing in the wrong country.
+
+Permissions and HTTPS: geolocation needs user permission and a secure context (HTTPS, or localhost in development).
+
+Battery and noise: throttle updates, stop sharing when the incident closes, and ignore low-accuracy readings above a threshold.
+
+Tile usage: use OpenStreetMap tiles with proper attribution and light usage; heavy traffic would need a commercial tile provider.
+
+10. Security Architecture
+
+Security is layered so that one mistake does not expose everything (defence in depth).
+
+Layer
+
+Controls
+
+Transport
+
+HTTPS and WSS in production; secure cookies
+
+Edge / HTTP
+
+Helmet headers, CORS restricted to the client origin, request size limits, rate limiting
+
+Authentication
+
+Short-lived access token and refresh token in httpOnly cookies; bcrypt password hashes; generic login errors
+
+Authorization
+
+authorize(roles) middleware plus ownership and state checks in services; 404 to hide resources
+
+Input
+
+Schema validation, unknown-field stripping, NoSQL operator sanitization
+
+Real-time
+
+Handshake authentication; participant check before joining rooms; identity taken from the socket, never from payloads
+
+Data
+
+password select: false; minimum data exposure in API responses; location visible to participants only
+
+Operations
+
+Secrets in environment variables; .gitignore; no stack traces to clients; logs without passwords or tokens
+
+
+
+Trust boundaries
+
+[ Browser ]  ==untrusted==>  [ Express/Socket.IO ]  ==trusted==>  [ MongoDB ]
+
+ Everything from the browser is input to be validated, authenticated and
+
+ authorized. The server decides role, severity, status and ownership.
+
+11. Configuration and Environments
+
+Environment
+
+Frontend
+
+Backend
+
+Database
+
+Development
+
+Vite dev server, localhost
+
+nodemon, localhost
+
+Atlas dev cluster or local MongoDB
+
+Production
+
+Static build on a host or served by Express
+
+Node on a host that supports WebSockets
+
+Atlas
+
+
+
+Backend environment variables
+
+Variable
+
+Purpose
+
+Example / note
+
+NODE_ENV
+
+development or production
+
+Controls cookie flags and logging
+
+PORT
+
+Server port
+
+5000
+
+MONGO_URI
+
+Atlas connection string
+
+Never commit
+
+JWT_ACCESS_SECRET
+
+Sign access tokens
+
+Long random string
+
+JWT_REFRESH_SECRET
+
+Sign refresh tokens
+
+Different long random string
+
+ACCESS_TOKEN_TTL / REFRESH_TOKEN_TTL
+
+Token lifetimes
+
+15m / 7d
+
+CLIENT_URL
+
+Allowed CORS and socket origin
+
+http://localhost:5173 in development
+
+COOKIE_SAMESITE / COOKIE_SECURE
+
+Cookie settings per environment
+
+lax or none; true in production
+
+ALERT_RADIUS_KM, CLAIM_TIMEOUT_SEC
+
+Assignment tuning
+
+5 and 60
+
+CLOUDINARY_* (Stretch)
+
+Image storage credentials
+
+Only if uploads are built
+
+
+
+Frontend environment variables (Vite)
+
+Variable
+
+Purpose
+
+VITE_API_URL
+
+Base URL of the REST API
+
+VITE_SOCKET_URL
+
+Socket.IO server URL
+
+Frontend variables are bundled into public JavaScript, so never place secrets in them. Keep a validated env.js in the backend that fails fast at startup if a required variable is missing.
+
+12. Deployment Architecture
+
+12.1 Topology options
+
+Option
+
+Layout
+
+Pros
+
+Cons
+
+A: Single service (recommended to start)
+
+Express serves the built React app and the API on one domain
+
+Same origin: no CORS, cookies simple and first-party, one deployment
+
+Frontend and backend deploy together
+
+B: Split hosting
+
+React on a static host; Node API and Socket.IO on a separate host
+
+Independent deploys; common pattern
+
+Cross-site cookies need SameSite=None and Secure and may be blocked by browsers; CORS must be exact
+
+C: Split with shared parent domain
+
+app.example.com and api.example.com
+
+Same-site cookies work; clean separation
+
+Needs a custom domain
+
+
+
+Option A                          Option B / C
+
+Browser --HTTPS/WSS--> Node       Browser --> Static host (React build)
+
+        (serves React +            Browser --HTTPS/WSS--> Node API host
+
+         REST + Socket.IO)         Both talk to MongoDB Atlas (IP allowlist)
+
+         |
+
+         v  MongoDB Atlas
+
+
+
+12.2 Deployment checklist
+
+Choose a backend host that supports long-lived WebSocket connections; free tiers often put idle apps to sleep, so the first request after idle can be slow. Verify the current terms of the provider you choose.
+
+Set all environment variables on the host; set NODE_ENV=production and secure cookies.
+
+Set CLIENT_URL to the exact production origin (no trailing slash mismatch).
+
+Allow the host in MongoDB Atlas network access (IP allowlist) and use a dedicated database user with limited rights.
+
+Build the frontend with the production API and socket URLs; serve over HTTPS so geolocation works.
+
+Seed the first admin with the seed script, then remove or protect it.
+
+Run the full manual end-to-end test on the deployed URL.
+
+12.3 CI/CD (optional)
+
+A GitHub Actions workflow can run lint and tests on every push and pull request; hosts can auto-deploy from the main branch. Keep this simple: install, lint, test, build.
+
+13. Cross-Cutting Concerns and Architecture Decisions
+
+13.1 Cross-cutting concerns
+
+Concern
+
+Where it lives
+
+Logging
+
+utils/logger.js plus request logger middleware; never log passwords or tokens
+
+Error handling
+
+AppError class, asyncHandler wrapper for controllers, one errorMiddleware
+
+Validation
+
+validators/ schemas applied through validate middleware; Mongoose schema as a second net
+
+Authentication
+
+authMiddleware (HTTP) and socket handshake middleware share the same token verification function
+
+Authorization
+
+roleMiddleware plus service-layer ownership checks
+
+Notifications
+
+notificationService: create record, emit event; used by all other services
+
+Configuration
+
+config/env.js reads and validates variables once
+
+Testability
+
+Services pure of HTTP; app.js separate from server.js; mongodb-memory-server for tests
+
+
+
+13.2 Architecture Decision Records (ADR)
+
+ID
+
+Decision
+
+Alternatives
+
+Reason
+
+ADR-01
+
+Layered modular monolith
+
+Microservices
+
+One developer; one domain; simpler to build, deploy, debug and explain
+
+ADR-02
+
+Services layer between controllers and models
+
+Fat controllers
+
+Reuse by sockets; testability; clear home for business rules
+
+ADR-03
+
+REST for commands, Socket.IO for events
+
+Everything over sockets; polling
+
+Validation and status codes for commands; low latency for pushes; avoids polling cost
+
+ADR-04
+
+Socket.IO
+
+Raw WebSocket (ws); Server-Sent Events
+
+Rooms, reconnection, fallbacks and acknowledgements built in; SSE is one-way only
+
+ADR-05
+
+MongoDB with Mongoose
+
+PostgreSQL
+
+MERN requirement; flexible documents; built-in GeoJSON support. SQL would be a fair alternative and is worth discussing
+
+ADR-06
+
+JWT in httpOnly cookies with refresh token
+
+localStorage tokens; server sessions
+
+Protects tokens from XSS; supports real logout; sessions would also be valid but need a session store
+
+ADR-07
+
+Database as source of truth
+
+Trusting socket events
+
+Dropped connections must not corrupt state
+
+ADR-08
+
+Atomic conditional update for claims
+
+Application-level locks; transactions
+
+Simple, correct and fast for a single document
+
+ADR-09
+
+Single socket per session via context
+
+Socket per component
+
+Avoid duplicate connections and listeners
+
+ADR-10
+
+Deploy as one service first (Option A)
+
+Split hosting
+
+Avoids cross-site cookie and CORS problems
+
+PART B: TOOLS
+
+14. Tools Overview
+
+Category
+
+Tools
+
+Frontend
+
+React, Vite, React Router, Axios, Socket.IO Client, React Leaflet and Leaflet, a styling approach (Tailwind or CSS), a chart library (Recharts) for analytics
+
+Backend
+
+Node.js, Express.js, Mongoose, Socket.IO, jsonwebtoken, bcrypt, cookie-parser, cors, helmet, express-rate-limit, a validation library (Zod recommended), dotenv, a logger
+
+Database
+
+MongoDB, MongoDB Atlas, MongoDB Compass
+
+Testing
+
+Jest, Supertest, mongodb-memory-server, Vitest, React Testing Library, socket.io-client (for socket tests), Postman
+
+Quality
+
+ESLint, Prettier, nodemon
+
+Version control
+
+Git, GitHub (with Issues and optionally Projects, Actions)
+
+Deployment
+
+A frontend/static host or Express serving the build; a Node host with WebSocket support; Atlas
+
+Optional
+
+Multer plus an image storage service; an AI API (Gemini was used in the old prototype) for suggested severity only
+
+15. Frontend Tools in Detail
+
+15.1 React
+
+What it is
+
+A JavaScript library for building user interfaces from reusable components.
+
+Why chosen
+
+Required by the MERN stack; huge demand in placements; component model suits dashboards and live screens.
+
+Problem it solves
+
+Keeps the UI in sync with changing state (incident status, chat, location) without manual DOM updates.
+
+Where used
+
+All pages, components, hooks and contexts.
+
+Alternatives
+
+Angular, Vue, Svelte.
+
+Why not those
+
+MERN specifies React; React has the widest job-market relevance and ecosystem (React Leaflet, testing tools).
+
+Know for interviews
+
+Components, props, state, hooks (useState, useEffect, useContext, useRef, useMemo, useCallback), keys, controlled inputs, conditional rendering, lifting state, Context API, re-render behaviour, cleanup in useEffect.
+
+
+
+15.2 Vite
+
+What it is
+
+A fast build tool and development server for frontend projects.
+
+Why chosen
+
+Instant dev-server start, fast hot reload, simple config, official React template.
+
+Problem it solves
+
+Bundling, environment variables (VITE_ prefix) and production builds.
+
+Alternatives
+
+Create React App (no longer recommended), Next.js, Webpack set up manually.
+
+Why not those
+
+CRA is deprecated; Next.js adds server-rendering concepts not needed for a SPA behind login; manual Webpack adds configuration cost.
+
+
+
+15.3 React Router
+
+What it is
+
+Client-side routing for React.
+
+Why chosen
+
+Standard routing solution; supports nested routes and layouts for role-based areas.
+
+Where used
+
+AppRoutes, ProtectedRoute and RoleRoute, URL parameters (:id), query params for filters.
+
+Know for interviews
+
+SPA routing vs server routing, nested routes, route guards, useNavigate, useParams, useSearchParams.
+
+
+
+15.4 Axios
+
+What it is
+
+An HTTP client for the browser and Node.
+
+Why chosen
+
+Interceptors (token refresh, error mapping), automatic JSON handling, simple withCredentials setting.
+
+Alternatives
+
+The built-in fetch API.
+
+Why not fetch
+
+fetch is fine, but would need hand-written wrappers for interceptors and error handling. Be ready to explain fetch too.
+
+
+
+15.5 Socket.IO Client
+
+What it is
+
+The browser side of Socket.IO.
+
+Why chosen
+
+Matches the server library; automatic reconnection, event-based API, rooms through the server.
+
+Where used
+
+sockets/socket.js, SocketContext and hooks that subscribe to events.
+
+Know for interviews
+
+WebSocket vs HTTP, events and acknowledgements, reconnection, cleanup of listeners (socket.off).
+
+
+
+15.6 Leaflet and React Leaflet (with OpenStreetMap)
+
+What it is
+
+Leaflet is an open-source interactive map library; React Leaflet provides React components for it. OpenStreetMap supplies the map tiles.
+
+Why chosen
+
+Free, no API key or billing, works well for markers, popups and bounds; already used in the previous prototype.
+
+Where used
+
+IncidentMap, LocationPicker, admin live map.
+
+Alternatives
+
+Google Maps Platform, Mapbox.
+
+Why not those
+
+Billing setup and API keys add friction; Leaflet is enough for markers and live movement. Routing/distance (Stretch) would need an extra service.
+
+Watch out for
+
+Default marker icons break under bundlers (set icons explicitly); [lat, lng] versus GeoJSON [lng, lat]; the map container needs a fixed height.
+
+
+
+15.7 Styling: Tailwind CSS or plain CSS (decision pending)
+
+Option 1: Tailwind CSS
+
+Utility classes in JSX, consistent spacing and responsive variants, fast to build dashboards. Learning curve for class names.
+
+Option 2: Plain CSS or CSS Modules
+
+No extra tooling, shows core CSS skills (flexbox, grid, media queries). More manual work for consistency.
+
+Recommendation
+
+Tailwind for speed and consistency, while still understanding the underlying CSS. Whichever you choose, define the design tokens from the Design Document once and reuse them.
+
+
+
+15.8 Recharts (analytics, Stretch)
+
+What it is
+
+A React chart library built on D3.
+
+Why chosen
+
+Declarative components, simple bar, pie and line charts for the admin analytics page.
+
+Alternatives
+
+Chart.js with react-chartjs-2, Victory.
+
+Why not those
+
+Any is acceptable; Recharts has the smallest learning curve for React developers.
+
+
+
+16. Backend Tools in Detail
+
+16.1 Node.js
+
+What it is
+
+A JavaScript runtime built on Chrome's V8 engine for running JavaScript on the server.
+
+Why chosen
+
+MERN requirement; one language across the stack; non-blocking I/O suits many concurrent connections such as sockets.
+
+Where used
+
+The whole backend.
+
+Alternatives
+
+Python (Flask, Django), Java (Spring Boot), Go.
+
+Know for interviews
+
+Event loop, call stack, callbacks, promises, async/await, non-blocking I/O, modules (CommonJS vs ES modules), npm, single-threaded model and when CPU-heavy work blocks it.
+
+
+
+16.2 Express.js
+
+What it is
+
+A minimal web framework for Node.js.
+
+Why chosen
+
+Standard for MERN; simple routing and middleware pipeline.
+
+Where used
+
+REST API, middleware chain, error handling.
+
+Alternatives
+
+Fastify, NestJS, Koa.
+
+Why not those
+
+NestJS adds a large framework to learn; Fastify and Koa are less common in placement expectations. Express teaches fundamentals directly.
+
+Know for interviews
+
+Middleware order, next(), error-handling middleware (four arguments), req/res, routers, route params, status codes, REST principles.
+
+
+
+16.3 Mongoose
+
+What it is
+
+An object-document mapper (ODM) for MongoDB in Node.js.
+
+Why chosen
+
+Schemas, validation, indexes, middleware (hooks), populate for references, timestamps.
+
+Alternatives
+
+The native MongoDB driver, Prisma.
+
+Why not those
+
+The native driver has no schema layer; Prisma's MongoDB support exists but Mongoose is the standard in MERN tutorials and interviews.
+
+Know for interviews
+
+Schema vs model, validation, populate, lean(), indexes, select: false, timestamps, pre-save hooks, findOneAndUpdate options (new, upsert), aggregation.
+
+
+
+16.3b Socket.IO (server)
+
+What it is
+
+A library enabling real-time, bidirectional, event-based communication, using WebSocket with fallbacks.
+
+Why chosen
+
+Rooms, namespaces, automatic reconnection, middleware for authentication, simple event model.
+
+Alternatives
+
+ws (raw WebSocket), Server-Sent Events, Firebase, Pusher.
+
+Why not those
+
+ws would require building rooms and reconnection yourself; SSE is one-way; hosted services add cost and hide the concepts you want to learn.
+
+Know for interviews
+
+HTTP vs WebSocket, handshake, rooms, broadcasting, middleware, acknowledgements, scaling with the Redis adapter.
+
+
+
+16.4 jsonwebtoken and bcrypt
+
+jsonwebtoken
+
+Creates and verifies JWTs. Used for access and refresh tokens. Alternative: opaque session IDs stored on the server.
+
+bcrypt
+
+Slow, salted password hashing. Alternative: bcryptjs (pure JavaScript, easier to install, slower) or argon2 (newer). Use bcrypt or bcryptjs; be able to explain salt and cost factor.
+
+Know for interviews
+
+JWT structure (header, payload, signature), why payloads are not secret, expiry, refresh flow, why hashing is not encryption.
+
+
+
+16.5 Security and utility middleware
+
+helmet
+
+Sets secure HTTP headers. Cheap, important protection.
+
+cors
+
+Restricts which origins may call the API; use an exact origin with credentials.
+
+cookie-parser
+
+Reads cookies so authMiddleware can verify the token.
+
+express-rate-limit
+
+Limits requests per IP or user; stricter on login and incident creation.
+
+Input sanitization
+
+Strip $ and . keys from input (a maintained sanitizer package or a small custom function). Check the library supports your Express version.
+
+dotenv
+
+Loads .env files into process.env during development.
+
+Logger
+
+morgan for HTTP logs and a small logger such as pino or winston for application logs.
+
+
+
+16.6 Validation library (decision pending)
+
+Options
+
+Zod, Joi, express-validator.
+
+Zod
+
+Schema-first, small API, excellent error messages, works on both backend and frontend so schemas could be shared in concept.
+
+Joi
+
+Mature and widely used in Node backends; verbose but clear.
+
+express-validator
+
+Chain-based validators built as Express middleware; quick for small APIs.
+
+Recommendation
+
+Zod. Whichever is chosen, apply it through one validate middleware so controllers stay clean.
+
+
+
+16.7 Multer and image storage (Stretch)
+
+Multer
+
+Middleware for multipart/form-data uploads; enforce type and size limits.
+
+Storage
+
+Do not store images in MongoDB documents or on a host that wipes its disk. Use a storage service such as Cloudinary (or S3-compatible storage) and keep only URLs in the incident.
+
+
+
+16.8 AI API (optional, Stretch)
+
+Purpose
+
+Suggest a severity or summarize a description for admins.
+
+Rule
+
+Never in the critical path. Timeouts and failures must be ignored. Rule-based severity remains the authority.
+
+Interview line
+
+"The core workflow is deterministic; AI is an enhancement, not a dependency."
+
+
+
+17. Database, Testing, Quality and Collaboration Tools
+
+17.1 MongoDB, Atlas and Compass
+
+MongoDB
+
+A document database storing JSON-like (BSON) documents. Chosen for flexible documents, native GeoJSON/2dsphere support and MERN alignment.
+
+Atlas
+
+Managed cloud MongoDB: no local installation, easy sharing between development and production, network access control and database users.
+
+Compass
+
+A GUI to inspect collections, test queries, view indexes and explain plans. Very useful while learning.
+
+Alternative
+
+PostgreSQL with PostGIS: strong relational and geospatial features. Not chosen because of the MERN goal, but know when SQL would be a better fit (strict relations, transactions, reporting).
+
+
+
+17.2 Testing tools
+
+Jest
+
+Test runner for backend unit and integration tests.
+
+Supertest
+
+Calls the Express app in tests without opening a port (needs app.js separate from server.js).
+
+mongodb-memory-server
+
+Runs a temporary in-memory MongoDB so tests do not touch real data.
+
+socket.io-client
+
+Used in tests to connect as different users and assert real-time events.
+
+Vitest and React Testing Library
+
+Component and hook tests for the Vite frontend.
+
+Postman
+
+Manual and exploratory API testing; collections can be exported as documentation.
+
+
+
+17.3 Code quality tools
+
+ESLint
+
+Finds bugs and enforces conventions.
+
+Prettier
+
+Automatic formatting for consistent style.
+
+nodemon
+
+Restarts the backend on file changes in development.
+
+
+
+17.4 Git, GitHub and workflow
+
+Git
+
+Version control; commit small, meaningful changes (for example "Add JWT auth middleware").
+
+GitHub
+
+Remote repository, portfolio visibility, pull requests, Issues and Projects for tracking phases.
+
+Branching
+
+main always working; feature branches such as feature/incident-lifecycle; merge through pull requests even when working alone.
+
+Safety
+
+.gitignore for node_modules, .env and build output; commit .env.example only.
+
+Know for interviews
+
+Commit, branch, merge vs rebase, pull request, resolving conflicts, .gitignore, what to do if a secret was committed (rotate it).
+
+
+
+17.5 Development environment
+
+VS Code
+
+Editor with ESLint, Prettier, GitLens and REST/Thunder Client extensions as helpful options.
+
+Browser DevTools
+
+Network tab (including WS frames), Application tab (cookies), React DevTools.
+
+Node and npm
+
+Current LTS release of Node.js; use npm consistently (do not mix package managers).
+
+
+
+18. Suggested Dependency Lists
+
+18.1 Backend packages
+
+Package
+
+Purpose
+
+Install in phase
+
+express
+
+Web framework
+
+4
+
+mongoose
+
+MongoDB ODM
+
+4
+
+dotenv
+
+Environment variables
+
+4
+
+cors, helmet, cookie-parser
+
+HTTP security and cookies
+
+4 to 5
+
+bcrypt (or bcryptjs)
+
+Password hashing
+
+5
+
+jsonwebtoken
+
+Tokens
+
+5
+
+zod (or Joi / express-validator)
+
+Validation
+
+5
+
+express-rate-limit
+
+Rate limiting
+
+5
+
+socket.io
+
+Real-time server
+
+8
+
+multer (Stretch)
+
+Uploads
+
+6 or later
+
+morgan, pino or winston
+
+Logging
+
+4
+
+Dev: nodemon, eslint, prettier
+
+Development quality
+
+4
+
+Dev: jest, supertest, mongodb-memory-server, socket.io-client
+
+Testing
+
+6 and 13
+
+
+
+18.2 Frontend packages
+
+Package
+
+Purpose
+
+Install in phase
+
+react, react-dom, vite
+
+Core app and tooling
+
+7
+
+react-router-dom
+
+Routing
+
+7
+
+axios
+
+HTTP client
+
+7
+
+socket.io-client
+
+Real-time client
+
+8
+
+leaflet, react-leaflet
+
+Maps
+
+9
+
+tailwindcss (or CSS)
+
+Styling
+
+7
+
+recharts (Stretch)
+
+Analytics charts
+
+11
+
+Dev: vitest, @testing-library/react, eslint, prettier
+
+Testing and quality
+
+7 and 13
+
+19. Developer Setup Checklist
+
+Done?
+
+Item
+
+[ ]
+
+Node.js LTS and npm installed and verified (node -v, npm -v)
+
+[ ]
+
+Git installed; user name and email configured
+
+[ ]
+
+GitHub account; repository created (CrisisConnect) with README and .gitignore
+
+[ ]
+
+VS Code with ESLint and Prettier extensions
+
+[ ]
+
+MongoDB Atlas account, cluster, database user and network access configured
+
+[ ]
+
+MongoDB Compass installed and connected
+
+[ ]
+
+Postman installed
+
+[ ]
+
+Hosting accounts chosen (frontend/backend) once decided
+
+[ ]
+
+Optional accounts: image storage service, AI API key
+
+[ ]
+
+A phone available to test geolocation and responsive layouts
+
+
+
+Repository layout
+
+CrisisConnect/
+
+  backend/
+
+  frontend/
+
+  docs/          PRD, Design, Architecture and Tools, Phase, Testing, brain.md ...
+
+  README.md      one-page overview, setup, screenshots, live link
+
+  .gitignore
+
+20. Tools by Phase
+
+Phase
+
+Focus
+
+Tools introduced
+
+0 to 3
+
+Analysis, requirements, design, database design
+
+Git and GitHub, VS Code, Atlas and Compass (schema experiments), documentation
+
+4
+
+Backend foundation
+
+Node, Express, Mongoose, dotenv, nodemon, ESLint and Prettier, logger, helmet and cors
+
+5
+
+Authentication
+
+bcrypt, jsonwebtoken, cookie-parser, validation library, rate limiter, Postman
+
+6
+
+Incident management
+
+Jest, Supertest, mongodb-memory-server (service and API tests start here)
+
+7
+
+React frontend
+
+Vite, React, React Router, Axios, styling system
+
+8
+
+Real-time
+
+Socket.IO server and client, socket tests
+
+9
+
+Maps and location
+
+Leaflet and React Leaflet, Geolocation API
+
+10
+
+Chat and notifications
+
+Existing tools (Socket.IO, Mongoose)
+
+11
+
+Admin and analytics
+
+Aggregation pipelines, Recharts
+
+12 to 13
+
+Security hardening and testing
+
+Vitest, React Testing Library, security checks, browser DevTools
+
+14
+
+Deployment
+
+Hosting providers, environment configuration, optional GitHub Actions
+
+15 to 16
+
+Documentation and interview prep
+
+Markdown docs, Postman collection export
+
+21. Open Decisions
+
+Decision
+
+Options
+
+Recommendation
+
+Settle by
+
+Styling
+
+Tailwind, plain CSS
+
+Tailwind
+
+Before Phase 7
+
+Validation library
+
+Zod, Joi, express-validator
+
+Zod
+
+Phase 4
+
+Deployment topology
+
+A single service, B split, C subdomains
+
+A first
+
+Phase 14
+
+Hosting providers
+
+To be compared at that time
+
+Choose one with WebSocket support; check current free-tier limits
+
+Phase 14
+
+Image storage
+
+Cloudinary or similar, or skip
+
+Skip until Stretch phase
+
+Phase 6
+
+Logger
+
+morgan plus pino or winston
+
+morgan plus pino
+
+Phase 4
+
+Module system
+
+CommonJS or ES modules
+
+ES modules for consistency with the frontend
+
+Phase 4
+
+Language
+
+JavaScript, TypeScript
+
+JavaScript for the first version; TypeScript is an optional later upgrade
+
+Phase 4
+
+22. One-Page Revision Sheet
+
+Question
+
+Short answer
+
+Describe the architecture in one line
+
+A layered monolith: React SPA, Express REST API and Socket.IO sharing one Node server and services layer, backed by MongoDB Atlas.
+
+Why a services layer?
+
+Business rules are reused by REST controllers and socket handlers, and are testable without HTTP.
+
+Where does the incident logic live?
+
+incidentService.transitionIncident, with the transition map and conditional updates.
+
+REST vs Socket.IO?
+
+REST for commands; Socket.IO for pushing events. The database is the source of truth.
+
+How do sockets authenticate?
+
+The same httpOnly access-token cookie is verified in the connection handshake; room membership is checked on the server.
+
+How do you handle reconnects?
+
+Re-fetch state over REST, rejoin rooms, handlers idempotent.
+
+Why not microservices?
+
+One developer, one domain, modest load; a modular monolith can be split later.
+
+Why app.js and server.js?
+
+Testable app without opening a port.
+
+Where does security happen?
+
+Layers: transport, headers and CORS, authentication, authorization, validation, sockets, data minimisation.
+
+Biggest deployment trap?
+
+Cross-site cookies and CORS when frontend and backend are on different domains; also hosts without WebSocket support.
+
+Why Leaflet?
+
+Free, simple markers and live movement; watch [lat, lng] versus GeoJSON [lng, lat].
+
+Why MongoDB?
+
+MERN, flexible documents, GeoJSON and 2dsphere support; PostgreSQL with PostGIS is a valid alternative.
+
+
+
+Interview angle
+
+Draw the high-level diagram from memory on paper, then trace one request (create incident) and one socket event (incident:updated) through it. If you can do that without notes, you can answer most architecture questions.
+

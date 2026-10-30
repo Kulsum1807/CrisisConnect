@@ -1,0 +1,2770 @@
+CrisisConnect
+
+Design Document (DRD)
+
+How the system is designed: data, rules, APIs, security and screens
+
+Real-Time Emergency Response and Incident Management Platform
+
+Full-Stack MERN Application
+
+Version 1.0 | Companion to the Project Requirement Document
+
+
+
+Document Guide
+
+The PRD says what CrisisConnect must do. This Design Document says how it is designed to behave: the data model, business logic, API contracts, security rules, real-time event contracts and screen design. The separate Architecture Document covers the system structure (layers, folders, deployment), and the Tools Document covers technologies.
+
+Section
+
+Topic
+
+1
+
+Design principles and decisions log
+
+2
+
+Domain model (entities and relationships)
+
+3
+
+Incident state machine design
+
+4
+
+Business logic design: severity, assignment, incident numbers
+
+5
+
+Database design (collections, fields, indexes, examples)
+
+6
+
+Authentication and authorization design
+
+7
+
+API design (conventions and every endpoint)
+
+8
+
+Real-time event contract (Socket.IO)
+
+9
+
+Validation design
+
+10
+
+Error handling design
+
+11
+
+UI/UX design (design system, navigation, every page)
+
+12
+
+Security design (threats and mitigations)
+
+13
+
+Key sequence flows
+
+14
+
+Traceability to the PRD and revision sheet
+
+1. Design Principles and Decisions Log
+
+1.1 Principles
+
+Principle
+
+Meaning in this project
+
+Backend is the authority
+
+The client sends inputs; the server decides role, severity, status transitions and permissions.
+
+Database is the source of truth
+
+Socket events are notifications that something changed; after reconnecting, clients re-fetch from the database.
+
+Deterministic core
+
+The emergency workflow uses fixed rules. AI, if added, only suggests and is never required.
+
+Least privilege
+
+Each role, and each socket, sees and does only what it needs.
+
+Fail safe for emergencies
+
+If something optional fails (location, image, AI), the SOS still goes through.
+
+Simple and explainable
+
+Prefer a clear design you can explain over a clever one.
+
+Consistent contracts
+
+One response envelope, one error format, one naming style.
+
+
+
+1.2 Decisions log
+
+These choices were made in this document. Each can be changed, but change the affected sections together.
+
+ID
+
+Decision
+
+Reason
+
+D-01
+
+Initial incident status is PENDING; there is no separate CREATED state.
+
+CREATED and PENDING existed for milliseconds; one state is simpler and equally informative.
+
+D-02
+
+Responders may self-claim a PENDING incident, and admins may also assign.
+
+Self-claim is fast; admin assignment covers unattended or critical cases.
+
+D-03
+
+Latest responder location is stored on the responder's user document.
+
+Avoids an extra collection; a TTL trail collection is a Stretch option.
+
+D-04
+
+Access token (short-lived) plus refresh token, both in httpOnly cookies.
+
+Safer than localStorage tokens; supports real logout by revoking the refresh token.
+
+D-05
+
+Locations use GeoJSON points with a 2dsphere index.
+
+Enables nearby-responder queries.
+
+D-06
+
+Incident number is a sequential counter with a prefix (for example CC-1001).
+
+Easy for humans to quote; created from a counters collection.
+
+D-07
+
+API responses use one envelope with success, message and data or error.
+
+Predictable frontend handling.
+
+D-08
+
+IDs in URLs are MongoDB ObjectIds; list endpoints are paginated.
+
+Standard, simple.
+
+2. Domain Model
+
+The domain model lists the real-world things the system tracks and how they relate. It comes before the database schema because the schema is just one way to store it.
+
+            +-----------+  creates (1..*)   +------------+
+
+            |   USER    |------------------>|  INCIDENT  |
+
+            | role=USER |                   |            |
+
+            +-----------+                   |            |
+
+            +-----------+  handles (0..1)   |            |
+
+            | RESPONDER |<------------------|            |
+
+            | role=RESP |                   +-----+------+
+
+            +-----------+                         |
+
+            +-----------+            has (0..*)   |   triggers (0..*)
+
+            |   ADMIN   |              +----------+-----------+
+
+            +-----------+              v                      v
+
+                                 +-----------+        +--------------+
+
+                                 |  MESSAGE  |        | NOTIFICATION |
+
+                                 +-----------+        +--------------+
+
+
+
+Entity
+
+Stored in
+
+Relationships
+
+User (all three roles)
+
+users
+
+One document type with a role field. A responder has an extra responderProfile object.
+
+Incident
+
+incidents
+
+createdBy: one user. assignedResponder: zero or one user. Embeds statusHistory and location.
+
+Message
+
+messages
+
+Belongs to one incident; sent by one user.
+
+Notification
+
+notifications
+
+Belongs to one user; may point to one incident.
+
+Counter
+
+counters
+
+Holds the next incident number.
+
+
+
+Why this design
+
+One users collection with a role field (instead of three collections) keeps login, JWT and authorization simple. Responder-only data lives in a nested object, so USER documents stay small. Statuses and location are embedded because they are always read together with the incident; messages are separate because a chat can grow without limit.
+
+3. Incident State Machine Design
+
+An emergency is a lifecycle, not a flag. The server owns every transition.
+
+                 +-------------------+
+
+   (create) ---> |      PENDING      | ---- admin ----> REJECTED
+
+                 +----+----------+---+
+
+            admin     |          | responder self-claims
+
+            assigns   v          v
+
+                 +----------+  +-----------+
+
+                 | ASSIGNED |->| ACCEPTED  |   (assigned responder accepts)
+
+                 +----+-----+  +-----+-----+
+
+        decline/      |              | responder starts
+
+        reassign      v              v
+
+                  (back to      +-------------+
+
+                   PENDING)     | IN_PROGRESS |
+
+                                +------+------+
+
+                                       | responder/admin completes
+
+                                       v
+
+                                  RESOLVED
+
+ 
+
+   CANCELLED can be reached from PENDING, ASSIGNED, ACCEPTED (user or admin).
+
+   Admin may also cancel IN_PROGRESS. Terminal: RESOLVED, CANCELLED, REJECTED.
+
+
+
+3.1 Transition table with guards and side effects
+
+From
+
+To
+
+Actor
+
+Guard (must be true)
+
+Side effects
+
+(none)
+
+PENDING
+
+System on create
+
+Valid input; severity computed
+
+Number generated; statusHistory[0]; alert eligible responders; admins if CRITICAL
+
+PENDING
+
+ASSIGNED
+
+ADMIN
+
+Responder verified, ONLINE, not in declinedBy
+
+assignedResponder set; assignedAt; notify responder
+
+PENDING
+
+ACCEPTED
+
+RESPONDER (claim)
+
+Verified, ONLINE; status still PENDING (atomic)
+
+assignedResponder set; responder BUSY; notify user and admins; open chat
+
+ASSIGNED
+
+ACCEPTED
+
+Assigned RESPONDER
+
+Caller is assignedResponder
+
+Responder BUSY; notify user; open chat
+
+ASSIGNED
+
+PENDING
+
+Assigned RESPONDER (decline) or ADMIN (reassign)
+
+Current status ASSIGNED
+
+Responder added to declinedBy; assignedResponder cleared; re-alert pool
+
+ACCEPTED
+
+IN_PROGRESS
+
+Assigned RESPONDER
+
+Caller is assignedResponder
+
+Notify user
+
+IN_PROGRESS
+
+RESOLVED
+
+Assigned RESPONDER or ADMIN
+
+Caller authorised
+
+resolvedAt set; responder ONLINE; chat closed; location sharing stops
+
+PENDING / ASSIGNED / ACCEPTED
+
+CANCELLED
+
+Creator USER or ADMIN
+
+Not yet IN_PROGRESS for USER
+
+cancelReason stored; responder freed; notify participants
+
+IN_PROGRESS
+
+CANCELLED
+
+ADMIN only
+
+Reason required
+
+Same as above
+
+PENDING
+
+REJECTED
+
+ADMIN
+
+Reason required
+
+Notify user (invalid or duplicate report)
+
+
+
+3.2 Implementation approach
+
+Keep an allowedTransitions map in one service file: { PENDING: [ASSIGNED, ACCEPTED, CANCELLED, REJECTED], ASSIGNED: [ACCEPTED, PENDING, CANCELLED], ACCEPTED: [IN_PROGRESS, CANCELLED], IN_PROGRESS: [RESOLVED, CANCELLED(admin)] }.
+
+Every transition goes through one function, for example transitionIncident(incidentId, toStatus, actor, note). Controllers and sockets never change status directly.
+
+The function checks the map, checks the actor guard, performs a conditional update (match _id and expected current status), pushes a statusHistory entry in the same update, then triggers notifications.
+
+If the conditional update matches nothing, return 409 Conflict ("incident state changed").
+
+// claim example (concept)
+
+Incident.findOneAndUpdate(
+
+  { _id: id, status: "PENDING" },
+
+  { $set: { status: "ACCEPTED", assignedResponder: responderId },
+
+    $push: { statusHistory: { status: "ACCEPTED", changedBy: responderId, at: now } } },
+
+  { new: true }
+
+);   // null result => someone else got there first
+
+
+
+Interview angle
+
+"How did you design the incident state machine?" Explain the status list, the allowed-transition map, actor guards, the single transition function, the conditional update that prevents races, and the statusHistory audit trail.
+
+4. Business Logic Design
+
+4.1 Severity rules
+
+The client sends only inputs (category, isSOS, optional checklist answers). The server maps them to a severity using this table. Rules are kept in one file so they are easy to explain and change.
+
+Situation
+
+Rule
+
+Result
+
+SOS
+
+Default
+
+HIGH
+
+SOS or Medical
+
+Checklist says not breathing, unconscious or severe bleeding
+
+CRITICAL
+
+Medical (manual)
+
+No life-threat answers
+
+HIGH if conscious but in pain; otherwise MEDIUM
+
+Fire
+
+Always
+
+HIGH
+
+Natural Disaster
+
+Always
+
+HIGH
+
+Crime / Security
+
+"In danger now" selected
+
+HIGH; otherwise MEDIUM
+
+Accident
+
+Injuries reported
+
+HIGH; otherwise MEDIUM
+
+Missing Person, Other
+
+Default
+
+MEDIUM
+
+Any
+
+Admin override
+
+Any level; logged with reason
+
+
+
+Possible later extension: an AI service returns a suggested severity shown to the admin; it never changes severity automatically and the system works with the service switched off.
+
+4.2 Finding and alerting responders
+
+1. Incident saved as PENDING.
+
+2. Query users where role=RESPONDER, verified, availability=ONLINE,
+
+   not in incident.declinedBy, and currentLocation $near incident.location
+
+   within radius R (start: 5 km).
+
+3. Emit incident:new to those responders (their user rooms).
+
+4. If no one accepts within T seconds (start: 60): widen radius (10 km, then 25 km)
+
+   and notify admins. Repeat up to a maximum, then leave PENDING with an admin alert.
+
+
+
+A responder whose location is unknown or stale (older than a few minutes) is still alerted if no nearby responder exists, so nobody is excluded just because of GPS issues. R and T are configuration values, not hard-coded.
+
+4.3 Incident number generation
+
+A counters document { _id: "incident", seq: N } is incremented atomically with $inc when an incident is created. The new value becomes the incident number, formatted like CC-1001. This avoids duplicates when two incidents are created at the same moment. (MongoDB ObjectId remains the true primary key.)
+
+4.4 Responder availability
+
+State
+
+Set by
+
+Meaning
+
+ONLINE
+
+Responder (toggle)
+
+Receives alerts and may accept
+
+BUSY
+
+System when an incident is accepted
+
+Handling an incident; no new alerts
+
+OFFLINE
+
+Responder, or system after disconnect grace period
+
+Receives nothing
+
+BUSY returns to ONLINE automatically when the incident reaches RESOLVED or CANCELLED. A responder cannot be set ONLINE unless verificationStatus is VERIFIED.
+
+5. Database Design (MongoDB with Mongoose)
+
+Collections: users, incidents, messages, notifications, counters. Types use Mongoose notation. "Req" means required.
+
+5.1 users
+
+Field
+
+Type
+
+Req
+
+Notes / validation
+
+_id
+
+ObjectId
+
+auto
+
+Primary key
+
+name
+
+String
+
+yes
+
+Trimmed, 2 to 60 characters
+
+email
+
+String
+
+yes
+
+Lowercase, valid format, unique index
+
+phone
+
+String
+
+yes
+
+Valid phone pattern; shown only to incident participants and admins
+
+password
+
+String
+
+yes
+
+bcrypt hash; select: false; never returned
+
+role
+
+String enum
+
+yes
+
+USER | RESPONDER | ADMIN; default USER; set only by server
+
+isActive
+
+Boolean
+
+yes
+
+Default true; false = suspended
+
+refreshTokenHash
+
+String
+
+no
+
+Hash of current refresh token; cleared on logout; select: false
+
+responderProfile.verificationStatus
+
+String enum
+
+responder
+
+PENDING | VERIFIED | REJECTED; default PENDING
+
+responderProfile.verificationNote
+
+String
+
+no
+
+Admin note
+
+responderProfile.availability
+
+String enum
+
+responder
+
+ONLINE | OFFLINE | BUSY; default OFFLINE
+
+responderProfile.specialization
+
+[String]
+
+no
+
+For example MEDICAL, FIRE (future matching)
+
+responderProfile.currentLocation
+
+GeoJSON Point
+
+no
+
+{ type: "Point", coordinates: [lng, lat] }; 2dsphere index
+
+responderProfile.lastLocationAt
+
+Date
+
+no
+
+Time of last update
+
+createdAt, updatedAt
+
+Date
+
+auto
+
+Mongoose timestamps
+
+
+
+Indexes: email (unique); role + responderProfile.availability + responderProfile.verificationStatus (for finding eligible responders); responderProfile.currentLocation (2dsphere).
+
+5.2 incidents
+
+Field
+
+Type
+
+Req
+
+Notes / validation
+
+_id
+
+ObjectId
+
+auto
+
+Primary key
+
+incidentNumber
+
+String
+
+yes
+
+For example CC-1001; unique index
+
+createdBy
+
+ObjectId ref users
+
+yes
+
+Owner; set from the authenticated user, never from the body
+
+assignedResponder
+
+ObjectId ref users
+
+no
+
+Null until assigned or claimed
+
+category
+
+String enum
+
+yes
+
+MEDICAL | FIRE | ACCIDENT | CRIME_SECURITY | NATURAL_DISASTER | MISSING_PERSON | OTHER
+
+description
+
+String
+
+manual
+
+Up to 1000 characters; optional for SOS
+
+isSOS
+
+Boolean
+
+yes
+
+Default false
+
+severity
+
+String enum
+
+yes
+
+LOW | MEDIUM | HIGH | CRITICAL; set by server
+
+status
+
+String enum
+
+yes
+
+PENDING | ASSIGNED | ACCEPTED | IN_PROGRESS | RESOLVED | CANCELLED | REJECTED; default PENDING
+
+location
+
+GeoJSON Point
+
+yes
+
+{ type: "Point", coordinates: [lng, lat] }; 2dsphere index
+
+locationAvailable
+
+Boolean
+
+yes
+
+false when the user denied GPS (address is then used)
+
+address
+
+String
+
+no
+
+Manual address or reverse-geocoded text
+
+checklist
+
+Object
+
+no
+
+Booleans such as conscious, breathing, inDangerNow, injuries
+
+evidence
+
+[String]
+
+no
+
+Image URLs (Stretch)
+
+statusHistory
+
+[ { status, changedBy, at, note } ]
+
+yes
+
+Append-only audit trail
+
+declinedBy
+
+[ObjectId]
+
+no
+
+Responders who declined
+
+cancelReason
+
+String
+
+no
+
+For CANCELLED or REJECTED
+
+assignedAt, acceptedAt, resolvedAt
+
+Date
+
+no
+
+Used for response and resolution time analytics
+
+createdAt, updatedAt
+
+Date
+
+auto
+
+Timestamps
+
+
+
+Indexes: incidentNumber (unique); { status, severity, createdAt } for dashboards and pools; createdBy + createdAt (user history); assignedResponder + status (responder lists); location (2dsphere).
+
+5.3 messages
+
+Field
+
+Type
+
+Req
+
+Notes
+
+_id
+
+ObjectId
+
+auto
+
+
+
+incidentId
+
+ObjectId ref incidents
+
+yes
+
+Which incident this chat belongs to
+
+senderId
+
+ObjectId ref users
+
+yes
+
+Taken from the socket identity, never from the client message
+
+text
+
+String
+
+yes
+
+1 to 500 characters, trimmed
+
+readAt
+
+Date
+
+no
+
+Set when the other participant reads it (Stretch)
+
+createdAt
+
+Date
+
+auto
+
+
+
+Index: { incidentId, createdAt } to load a chat in order efficiently.
+
+5.4 notifications
+
+Field
+
+Type
+
+Req
+
+Notes
+
+_id
+
+ObjectId
+
+auto
+
+
+
+userId
+
+ObjectId ref users
+
+yes
+
+Recipient
+
+type
+
+String enum
+
+yes
+
+INCIDENT_NEW | INCIDENT_ASSIGNED | INCIDENT_ACCEPTED | STATUS_CHANGED | INCIDENT_CANCELLED | CRITICAL_UNASSIGNED | RESPONDER_VERIFIED
+
+title, message
+
+String
+
+yes
+
+Display text
+
+relatedIncident
+
+ObjectId ref incidents
+
+no
+
+For deep link
+
+isRead
+
+Boolean
+
+yes
+
+Default false
+
+createdAt
+
+Date
+
+auto
+
+
+
+Index: { userId, isRead, createdAt } for the unread counter and list.
+
+5.5 counters
+
+{ _id: "incident", seq: Number }. Incremented atomically with findOneAndUpdate and $inc (with upsert) when an incident is created.
+
+5.6 Example documents
+
+// incident
+
+{
+
+  "_id": "66f1c0a2b7d3e4a1c8f90012",
+
+  "incidentNumber": "CC-1024",
+
+  "createdBy": "66f1b8d0b7d3e4a1c8f90001",
+
+  "assignedResponder": "66f1b9e4b7d3e4a1c8f90007",
+
+  "category": "MEDICAL", "isSOS": true,
+
+  "severity": "CRITICAL", "status": "ACCEPTED",
+
+  "location": { "type": "Point", "coordinates": [77.2090, 28.6139] },
+
+  "locationAvailable": true,
+
+  "checklist": { "conscious": false, "breathing": true },
+
+  "statusHistory": [
+
+    { "status": "PENDING",  "changedBy": "66f1b8d0...0001", "at": "2026-10-05T09:12:03Z" },
+
+    { "status": "ACCEPTED", "changedBy": "66f1b9e4...0007", "at": "2026-10-05T09:12:41Z" }
+
+  ],
+
+  "declinedBy": [],
+
+  "createdAt": "2026-10-05T09:12:03Z"
+
+}
+
+
+
+// message
+
+{ "incidentId": "66f1c0a2...0012", "senderId": "66f1b8d0...0001",
+
+  "text": "I am near the main gate.", "createdAt": "2026-10-05T09:13:10Z" }
+
+
+
+5.7 Relationship summary
+
+Relationship
+
+Type
+
+How stored
+
+User creates Incident
+
+One to many
+
+incidents.createdBy references users._id
+
+Responder handles Incident
+
+One to many over time; one at a time per incident
+
+incidents.assignedResponder references users._id
+
+Incident has Messages
+
+One to many (unbounded)
+
+messages.incidentId references incidents._id (separate collection)
+
+User receives Notifications
+
+One to many (unbounded)
+
+notifications.userId references users._id
+
+Incident has status history
+
+One to many (bounded, small)
+
+Embedded array in the incident
+
+
+
+Interview angle
+
+"Why embed statusHistory but reference messages?" Embed data that is small, always read with its parent and bounded in size; reference data that grows without limit or is queried on its own. Mention MongoDB's 16 MB document limit.
+
+6. Authentication and Authorization Design
+
+6.1 Registration
+
+POST /api/auth/register  { name, email, phone, password }
+
+  -> validate (format, password strength)
+
+  -> email already exists? -> 409
+
+  -> bcrypt.hash(password, 10..12 rounds)
+
+  -> create user with role USER (any role in body is ignored)
+
+  -> respond 201 with user (no password)
+
+Responders use a separate sign-up that creates role RESPONDER with verificationStatus PENDING. Admins are created only by a seed script.
+
+6.2 Login and token handling
+
+Item
+
+Design
+
+Access token
+
+JWT containing user id and role; lifetime about 15 minutes; sent as an httpOnly, secure, sameSite cookie.
+
+Refresh token
+
+Random or JWT value; lifetime about 7 days; httpOnly cookie restricted to the refresh path; its hash is stored in the user document.
+
+Login
+
+Find user by email (select password); reject inactive; bcrypt.compare; issue both tokens; return user without password. Use one generic error ("Invalid credentials") for wrong email or password.
+
+Refresh
+
+Verify the refresh token and compare its hash; issue a new access token (and rotate the refresh token); on mismatch, clear cookies and force login.
+
+Logout
+
+Clear both cookies and clear refreshTokenHash.
+
+Cross-origin setup
+
+CORS with credentials: true and an explicit origin; axios withCredentials: true; Socket.IO connects with credentials.
+
+
+
+Why this design
+
+A token in localStorage can be stolen by any injected script (XSS). An httpOnly cookie cannot be read by JavaScript. The cost is thinking about CSRF, reduced here by sameSite and by using JSON-only state-changing endpoints. JWTs are stateless, so a real logout needs the refresh-token hash on the server.
+
+6.3 Middleware chain for a protected request
+
+Request -> protect (read cookie, verify JWT, load user, reject if inactive)
+
+        -> authorize(...roles) (check req.user.role)
+
+        -> validate(schema) (check body, params, query)
+
+        -> controller -> service (ownership checks, business rules) -> model
+
+
+
+6.4 Permission matrix
+
+Action
+
+USER
+
+RESPONDER
+
+ADMIN
+
+Extra rule
+
+Create incident
+
+Yes
+
+No
+
+No
+
+Rate limited
+
+View incident
+
+Own only
+
+Available or assigned
+
+All
+
+Ownership check in service
+
+Cancel incident
+
+Own, before IN_PROGRESS
+
+No
+
+Any non-terminal
+
+Reason stored
+
+Accept incident
+
+No
+
+Yes (verified, ONLINE)
+
+No
+
+Atomic claim
+
+Update status
+
+No
+
+Assigned only
+
+Yes
+
+Allowed-transition map
+
+Assign or reassign
+
+No
+
+No
+
+Yes
+
+Target verified and ONLINE
+
+Override severity
+
+No
+
+No
+
+Yes
+
+Audited
+
+Read incident chat
+
+Own incident
+
+Assigned incident
+
+Yes
+
+Participant check
+
+Set availability
+
+No
+
+Yes (self)
+
+No
+
+Must be VERIFIED for ONLINE
+
+Verify responder, suspend account
+
+No
+
+No
+
+Yes
+
+Cannot suspend self
+
+Analytics
+
+No
+
+No
+
+Yes
+
+
+
+
+
+Note
+
+Return 404 (not 403) when a user asks for another user's incident. A 403 confirms the incident exists; a 404 reveals nothing. This is a small but good security detail to mention in interviews.
+
+7. API Design
+
+7.1 Conventions
+
+Item
+
+Convention
+
+Base URL
+
+/api (versioning /api/v1 is optional; keep /api for simplicity)
+
+Format
+
+JSON request and response; Content-Type: application/json (multipart only for image upload)
+
+Auth
+
+httpOnly cookies; no tokens in URLs
+
+Success envelope
+
+{ "success": true, "message": "...", "data": { ... } }
+
+Error envelope
+
+{ "success": false, "message": "...", "code": "VALIDATION_ERROR", "errors": [ { "field": "...", "message": "..." } ] }
+
+Pagination
+
+Query: page (default 1), limit (default 20, max 100). Response data includes items, page, limit, total, totalPages.
+
+Filtering and sorting
+
+Query parameters such as status, severity, category, from, to, sort (for example -createdAt).
+
+Naming
+
+Plural nouns; actions only where a state change is not plain CRUD (assign, cancel, accept).
+
+Dates
+
+ISO 8601 UTC strings.
+
+
+
+7.2 Status code usage
+
+Code
+
+When
+
+200 / 201
+
+Success / resource created
+
+400
+
+Malformed request or validation error
+
+401
+
+Not logged in or token invalid or expired
+
+403
+
+Logged in but role not allowed, or account suspended
+
+404
+
+Not found (also used to hide resources the caller may not see)
+
+409
+
+Conflict: duplicate email, incident state changed, already taken
+
+422
+
+Valid JSON that fails business rules (optional; 400 is acceptable)
+
+429
+
+Rate limit exceeded
+
+500
+
+Unexpected server error (generic message to the client)
+
+
+
+7.3 Authentication endpoints
+
+Method and path
+
+Access
+
+Request body
+
+Success response
+
+Errors
+
+POST /api/auth/register
+
+Public
+
+name, email, phone, password
+
+201 user
+
+400, 409
+
+POST /api/auth/register-responder
+
+Public
+
+name, email, phone, password, specialization[]
+
+201 user (unverified)
+
+400, 409
+
+POST /api/auth/login
+
+Public
+
+email, password
+
+200 user; sets cookies
+
+400, 401, 403 (suspended), 429
+
+POST /api/auth/refresh
+
+Cookie
+
+none
+
+200; new access cookie
+
+401
+
+POST /api/auth/logout
+
+Any
+
+none
+
+200
+
+401
+
+GET /api/auth/me
+
+Any
+
+none
+
+200 user
+
+401
+
+
+
+7.4 User endpoints
+
+Method and path
+
+Access
+
+Request
+
+Success response
+
+Errors
+
+GET /api/users/me
+
+Any
+
+none
+
+200 profile
+
+401
+
+PATCH /api/users/me
+
+Any
+
+name, phone
+
+200 profile
+
+400, 401
+
+PATCH /api/users/me/password
+
+Any
+
+currentPassword, newPassword
+
+200
+
+400, 401
+
+GET /api/users/me/incidents
+
+USER
+
+page, limit, status
+
+200 paginated incidents
+
+401, 403
+
+
+
+7.5 Incident endpoints
+
+Method and path
+
+Access
+
+Request
+
+Success response
+
+Errors
+
+POST /api/incidents
+
+USER
+
+isSOS, category, description, location {lat,lng}, checklist, address
+
+201 incident
+
+400, 401, 403, 429
+
+GET /api/incidents
+
+Role-scoped
+
+page, limit, status, severity, category
+
+200 paginated list scoped to caller
+
+401
+
+GET /api/incidents/:id
+
+Participant or ADMIN
+
+none
+
+200 incident with populated user and responder
+
+401, 404
+
+PATCH /api/incidents/:id/status
+
+Assigned RESPONDER or ADMIN
+
+status, note
+
+200 incident
+
+400, 403, 404, 409
+
+POST /api/incidents/:id/assign
+
+ADMIN
+
+responderId
+
+200 incident
+
+400, 404, 409
+
+POST /api/incidents/:id/cancel
+
+Creator or ADMIN
+
+reason
+
+200 incident
+
+400, 403, 404, 409
+
+PATCH /api/incidents/:id/severity
+
+ADMIN
+
+severity, reason
+
+200 incident
+
+400, 404, 409
+
+GET /api/incidents/:id/messages
+
+Participant or ADMIN
+
+before (cursor), limit
+
+200 messages
+
+401, 404
+
+
+
+Example: POST /api/incidents (SOS)
+
+Request
+
+{ "isSOS": true,
+
+  "location": { "lat": 28.6139, "lng": 77.2090 },
+
+  "checklist": { "conscious": false } }
+
+ 
+
+Response 201
+
+{ "success": true, "message": "SOS created",
+
+  "data": { "incident": { "_id": "...", "incidentNumber": "CC-1024",
+
+            "status": "PENDING", "severity": "CRITICAL", "isSOS": true } } }
+
+ 
+
+Note: severity, status, createdBy and incidentNumber are ignored if sent by the client.
+
+
+
+Example: POST /api/responders/incidents/:id/accept
+
+200  { "success": true, "message": "Incident accepted", "data": { "incident": { ... } } }
+
+409  { "success": false, "code": "ALREADY_TAKEN", "message": "Another responder accepted this incident" }
+
+
+
+7.6 Responder endpoints
+
+Method and path
+
+Access
+
+Request
+
+Success response
+
+Errors
+
+PATCH /api/responders/status
+
+RESPONDER
+
+availability: ONLINE or OFFLINE
+
+200 profile
+
+403 (not verified), 409 (busy)
+
+PATCH /api/responders/location
+
+RESPONDER
+
+lat, lng
+
+200
+
+400
+
+GET /api/responders/incidents
+
+RESPONDER
+
+scope: available | assigned | completed, page, limit
+
+200 list
+
+401, 403
+
+POST /api/responders/incidents/:id/accept
+
+RESPONDER
+
+none
+
+200 incident
+
+403, 404, 409
+
+POST /api/responders/incidents/:id/decline
+
+RESPONDER
+
+reason (optional)
+
+200
+
+403, 404, 409
+
+
+
+7.7 Notification endpoints
+
+Method and path
+
+Access
+
+Request
+
+Success response
+
+GET /api/notifications
+
+Any
+
+page, limit, unreadOnly
+
+200 list and unreadCount
+
+PATCH /api/notifications/:id/read
+
+Owner
+
+none
+
+200
+
+PATCH /api/notifications/read-all
+
+Any
+
+none
+
+200
+
+
+
+7.8 Admin endpoints
+
+Method and path
+
+Access
+
+Request
+
+Success response
+
+GET /api/admin/users
+
+ADMIN
+
+page, limit, role, isActive, search
+
+200 paginated users
+
+GET /api/admin/responders
+
+ADMIN
+
+verificationStatus, availability, page
+
+200 paginated responders
+
+PATCH /api/admin/responders/:id/verify
+
+ADMIN
+
+status (VERIFIED or REJECTED), note
+
+200 responder
+
+PATCH /api/admin/users/:id/status
+
+ADMIN
+
+isActive, reason
+
+200 user (cannot target self)
+
+GET /api/admin/incidents
+
+ADMIN
+
+status, severity, category, from, to, page
+
+200 paginated incidents
+
+GET /api/admin/dashboard
+
+ADMIN
+
+none
+
+200 counts: active, critical, available responders, resolved today
+
+GET /api/admin/analytics
+
+ADMIN
+
+from, to
+
+200 byCategory, bySeverity, byStatus, averages (aggregation pipelines)
+
+
+
+Interview angle
+
+Be ready to explain why the incident list endpoint returns different data per role (scoping in the service layer), and why filtering belongs in the database query rather than in JavaScript after loading everything.
+
+8. Real-Time Event Contract (Socket.IO)
+
+REST changes data; Socket.IO tells people it changed. Each event below lists direction, payload and who may receive it. Payloads are small; clients re-fetch details over REST when needed.
+
+8.1 Connection and rooms
+
+Item
+
+Design
+
+Authentication
+
+The access-token cookie is verified in the Socket.IO connection middleware. Failed verification rejects the connection; the identity (userId, role) is attached to the socket.
+
+Personal room
+
+On connect the socket joins user:<userId> for notifications and direct alerts.
+
+Role rooms
+
+Verified ONLINE responders join responders:online; admins join admins.
+
+Incident room
+
+incident:<incidentId>, joined only after the server confirms the user is the creator, the assigned responder or an admin.
+
+Disconnect
+
+Responder gets a grace period (for example 30 to 60 seconds) before being marked OFFLINE.
+
+Reconnect
+
+Client re-fetches current incident and unread notifications over REST, then rejoins rooms.
+
+
+
+8.2 Server to client events
+
+Event
+
+Sent to
+
+Payload
+
+Trigger
+
+incident:new
+
+Eligible responders; admins
+
+incidentId, number, category, severity, location, isSOS
+
+Incident created or returned to pool
+
+incident:updated
+
+incident room; admins
+
+incidentId, status, assignedResponder summary, at
+
+Any status or assignment change
+
+incident:taken
+
+Other eligible responders
+
+incidentId
+
+Another responder accepted
+
+responder:location
+
+incident room
+
+incidentId, lat, lng, at
+
+Responder sends a location update
+
+chat:message
+
+incident room
+
+messageId, incidentId, senderId, senderName, text, createdAt
+
+Message saved
+
+notification:new
+
+user:<id>
+
+notificationId, type, title, message, relatedIncident
+
+Notification created
+
+error:event
+
+Single socket
+
+code, message
+
+Rejected event (for example not a participant)
+
+
+
+8.3 Client to server events
+
+Event
+
+From
+
+Payload
+
+Server checks
+
+incident:join
+
+Any participant
+
+incidentId
+
+Participant check, incident not terminal (history may still be read over REST)
+
+incident:leave
+
+Any participant
+
+incidentId
+
+None
+
+chat:send
+
+User or assigned responder
+
+incidentId, text
+
+Participant, incident active, text length; saves then emits chat:message
+
+responder:location
+
+Assigned responder
+
+incidentId, lat, lng
+
+Caller is assignedResponder; status ACCEPTED or IN_PROGRESS; rate limit
+
+
+
+Note
+
+The server never trusts identity fields sent by the client. senderId always comes from the authenticated socket, and room membership is verified on the server, not assumed from the client.
+
+9. Validation Design
+
+Validation runs in middleware (a schema library such as Zod, Joi or express-validator) before the controller, and again in Mongoose schemas as a safety net. Unknown fields are stripped, which also blocks mass-assignment attacks (for example a client sending role or severity).
+
+Input
+
+Rules
+
+name
+
+Required, trimmed, 2 to 60 characters
+
+email
+
+Required, valid format, lowercase, unique
+
+phone
+
+Required, valid phone pattern (digits, optional country code), 10 to 15 digits
+
+password
+
+Required, minimum 8 characters, at least one letter and one number; maximum length enforced to avoid bcrypt abuse
+
+category
+
+Must be one of the defined enum values
+
+description
+
+Required for manual reports, up to 1000 characters; HTML stripped
+
+location
+
+lat between -90 and 90, lng between -180 and 180; both numbers
+
+status (update)
+
+Must be a valid status; transition checked separately by the state machine
+
+chat text
+
+1 to 500 characters, trimmed
+
+ObjectId params
+
+Must be valid ObjectIds, otherwise 400 (not a server crash)
+
+page / limit
+
+Positive integers; limit capped at 100
+
+image (Stretch)
+
+Type jpg/png/webp only, maximum 5 MB, renamed on save
+
+Everything
+
+Strip unknown fields; sanitize against NoSQL operator injection ($ and . keys)
+
+10. Error Handling Design
+
+Services throw a custom AppError(message, statusCode, code). A single error middleware at the end of the chain converts any error (AppError, Mongoose validation or duplicate-key, JWT, unknown) into the standard error envelope. Unknown errors are logged with details but the client receives only a generic message.
+
+Code
+
+HTTP
+
+Meaning
+
+VALIDATION_ERROR
+
+400
+
+Input failed validation; errors array lists fields
+
+UNAUTHENTICATED
+
+401
+
+Missing or invalid token
+
+TOKEN_EXPIRED
+
+401
+
+Access token expired; client should call refresh
+
+FORBIDDEN
+
+403
+
+Role or ownership not allowed
+
+ACCOUNT_SUSPENDED
+
+403
+
+Account inactive
+
+NOT_FOUND
+
+404
+
+Resource not found or hidden
+
+DUPLICATE
+
+409
+
+Unique field already used (for example email)
+
+INVALID_TRANSITION
+
+409
+
+Status change not allowed from current status
+
+ALREADY_TAKEN
+
+409
+
+Incident was claimed by someone else
+
+RATE_LIMITED
+
+429
+
+Too many requests
+
+SERVER_ERROR
+
+500
+
+Unexpected problem
+
+
+
+Frontend handling: an Axios response interceptor reads the code. TOKEN_EXPIRED triggers one silent refresh and a retry; UNAUTHENTICATED redirects to login; VALIDATION_ERROR shows field messages; other errors show a toast with the message. Every screen has an error state, not just a console log.
+
+11. UI/UX Design
+
+11.1 Design principles
+
+Emergency first: the primary action (SOS) is the largest, most visible element on the user dashboard.
+
+Severity is instantly readable: colour, icon and text label together (never colour alone).
+
+Few taps, little typing: especially for the user in danger.
+
+Calm clarity for responders and admins: dense information, but clearly grouped and sorted by priority.
+
+Always show state: loading, empty, error, offline and connection-lost indicators.
+
+Mobile-first: users and responders are on phones; admins mostly on desktop.
+
+11.2 Design system
+
+Token
+
+Value
+
+Use
+
+Primary
+
+#1F4E79 (deep blue)
+
+Navigation, buttons, headings
+
+Emergency accent
+
+#C62828 (red)
+
+SOS button, critical items, destructive actions
+
+Severity LOW
+
+#2E7D32 (green)
+
+Badge, marker
+
+Severity MEDIUM
+
+#F9A825 (amber)
+
+Badge, marker
+
+Severity HIGH
+
+#EF6C00 (orange)
+
+Badge, marker
+
+Severity CRITICAL
+
+#C62828 (red) with pulsing outline
+
+Badge, marker, row highlight
+
+Success / info
+
+#2E7D32 / #1565C0
+
+Confirmations / hints
+
+Background / surface
+
+#F5F7FA / #FFFFFF
+
+Page / cards
+
+Text
+
+#1A1A1A primary, #5F6B7A secondary
+
+Body, captions
+
+Typography
+
+System UI sans-serif (or Inter); sizes 14 body, 16 inputs, 20 / 28 headings
+
+Readable on small screens
+
+Spacing
+
+4-point scale (4, 8, 12, 16, 24, 32)
+
+Padding and gaps
+
+Radius and shadow
+
+8 px radius; light shadow on cards
+
+Cards, buttons
+
+Touch targets
+
+At least 44 by 44 px; SOS button at least 120 px
+
+Mobile usability
+
+
+
+Status colours: PENDING grey, ASSIGNED blue, ACCEPTED teal, IN_PROGRESS purple, RESOLVED green, CANCELLED and REJECTED dark grey. Each status badge also shows its text.
+
+11.3 Navigation map
+
+Role
+
+Routes
+
+Navigation style
+
+Public
+
+/, /login, /register, /register-responder, /about
+
+Top bar with Login and Register; emergency-number notice in the footer
+
+USER
+
+/user/dashboard, /user/report, /user/incidents, /user/incidents/:id, /user/profile
+
+Bottom tab bar on mobile (Home, Report, History, Profile); sidebar on desktop
+
+RESPONDER
+
+/responder/dashboard, /responder/incidents, /responder/incidents/:id, /responder/profile
+
+Bottom tab bar on mobile; availability toggle always visible in the header
+
+ADMIN
+
+/admin/dashboard, /admin/users, /admin/responders, /admin/incidents, /admin/analytics
+
+Left sidebar; notification bell
+
+All role routes sit behind a ProtectedRoute that checks login and role and redirects otherwise. These guards only improve user experience; the server enforces real security.
+
+11.4 Page designs
+
+User Dashboard (/user/dashboard)
+
+Purpose
+
+Start an SOS and see the active incident at a glance.
+
+Layout
+
+Top: emergency-number notice. Centre: very large red SOS button (hold or tap and confirm within 3 seconds to cancel a mis-press). Below: active incident card, then "Report an emergency" link and recent incidents.
+
+Components
+
+SOSButton, ActiveIncidentCard (status badge, responder name, link), RecentIncidentsList, ConnectionIndicator, NotificationBell.
+
+States
+
+No active incident (calm state); location permission denied (banner with manual address option); loading; offline.
+
+
+
+Report Emergency (/user/report)
+
+Purpose
+
+Collect structured details quickly.
+
+Layout
+
+Single column form: category chips, short checklist questions that depend on the category, description, location preview map with "use my location", optional photo, submit.
+
+Components
+
+CategorySelector, ChecklistQuestions, LocationPicker (map plus address field), ImageUpload (Stretch), SubmitBar.
+
+States
+
+Validation errors inline; submitting spinner; success redirect to incident details; failure with retry.
+
+
+
+Incident Details (user) (/user/incidents/:id)
+
+Purpose
+
+Track progress, see the responder, chat and cancel.
+
+Layout
+
+Top: status timeline with the current step highlighted. Middle: map with incident, user and responder markers. Bottom: responder card, chat panel, Cancel button (only when allowed).
+
+Components
+
+StatusTimeline, IncidentMap, ResponderCard, ChatPanel, CancelDialog.
+
+States
+
+Waiting for responder (animated, shows time waiting); responder en route (live marker); closed (chat read-only); socket disconnected (banner, auto re-fetch).
+
+
+
+User History (/user/incidents)
+
+Purpose
+
+Browse past incidents.
+
+Layout
+
+Filterable, paginated list of cards with number, category, severity badge, status badge and date.
+
+Components
+
+IncidentCard, FilterBar, Pagination.
+
+States
+
+Empty history message; loading skeletons.
+
+
+
+Responder Dashboard (/responder/dashboard)
+
+Purpose
+
+Go online and see work that needs attention.
+
+Layout
+
+Header with ONLINE/OFFLINE toggle. Left or top: list of available incidents sorted by severity then age. Right or below: map of incidents and own position. Active incident pinned at the top when BUSY.
+
+Components
+
+AvailabilityToggle, IncidentFeed (cards with severity, distance, time since created), Accept and Decline buttons, MapView.
+
+States
+
+Offline (explains no alerts); unverified (banner, toggle disabled); "already taken" toast; new incident alert with sound or highlight.
+
+
+
+Responder Incident Details (/responder/incidents/:id)
+
+Purpose
+
+Handle the incident from start to resolution.
+
+Layout
+
+Incident summary and checklist answers, map with route-direction hint, user contact (phone), chat panel, status action bar (Start, Resolve).
+
+Components
+
+IncidentSummary, IncidentMap, ChatPanel, StatusActionBar, LocationSharingIndicator.
+
+States
+
+Sharing location (green dot); GPS blocked (warning); resolve confirmation dialog.
+
+
+
+Admin Dashboard (/admin/dashboard)
+
+Purpose
+
+Operational overview.
+
+Layout
+
+Row of metric cards (Active, Critical, Available responders, Resolved today); critical unassigned list; recent incidents table; live map of active incidents.
+
+Components
+
+MetricCard, CriticalList, IncidentTable, LiveIncidentMap.
+
+States
+
+Zero-state; auto-updates through socket events; critical rows highlighted.
+
+
+
+Admin Users / Responders / Incidents
+
+Purpose
+
+Manage accounts and incidents.
+
+Layout
+
+Searchable, filterable, paginated tables. Responders page has tabs: Pending verification, Verified, Rejected. Incident row opens a detail drawer with history and an Assign dropdown (only verified ONLINE responders).
+
+Components
+
+DataTable, FilterBar, VerifyDialog, SuspendDialog, AssignDialog, HistoryTimeline.
+
+States
+
+Confirmation required for suspend and reject; success and error toasts.
+
+
+
+Admin Analytics (/admin/analytics)
+
+Purpose
+
+Understand trends.
+
+Layout
+
+Date-range filter; charts for incidents by category, severity and status; line chart of daily counts; cards for average response and resolution time.
+
+Components
+
+DateRangeFilter, BarChart, PieChart, LineChart, StatCard.
+
+States
+
+No data in range; loading.
+
+
+
+Auth pages
+
+Purpose
+
+Register and log in.
+
+Layout
+
+Centred card, large inputs, clear errors, link to the other form; responder sign-up explains verification.
+
+Components
+
+AuthForm, PasswordInput, ErrorMessage.
+
+States
+
+Invalid credentials; suspended account message; rate-limit message.
+
+
+
+11.5 Reusable components
+
+Component
+
+Used for
+
+SeverityBadge, StatusBadge
+
+Consistent labels with colour plus text
+
+IncidentCard, IncidentTable
+
+Lists for each role
+
+IncidentMap (React Leaflet)
+
+Markers for incident, user, responder; auto-fit bounds; marker colour by severity
+
+ChatPanel
+
+Message list, input, auto-scroll, closed state
+
+StatusTimeline / HistoryTimeline
+
+Status steps and audit trail
+
+ConfirmDialog
+
+Cancel, reject, suspend, resolve
+
+Toast / Alert
+
+Feedback and errors
+
+Spinner, Skeleton, EmptyState
+
+Loading and empty states
+
+ProtectedRoute, RoleRoute
+
+Access control in routing
+
+
+
+11.6 Frontend state design
+
+State
+
+Where it lives
+
+Notes
+
+Authenticated user and role
+
+AuthContext
+
+Loaded from GET /api/auth/me on app start
+
+Socket connection
+
+SocketContext (one connection per session)
+
+Connects after login; disconnects on logout; exposes subscribe helpers
+
+Server data (incidents, notifications)
+
+Component state with custom hooks (useIncident, useIncidents, useNotifications)
+
+Hooks fetch over REST and update when socket events arrive
+
+Form state
+
+Local component state
+
+Not global
+
+UI state (dialogs, filters)
+
+Local state or URL query params
+
+Filters in the URL make pages shareable and refresh-safe
+
+11.7 Responsive and accessibility rules
+
+Breakpoints: phone (under 640 px), tablet, desktop; layouts reflow from single column to sidebar plus content.
+
+Maps keep a minimum height and never trap scrolling on phones.
+
+All interactive controls are keyboard reachable with visible focus; images and icons have text alternatives.
+
+Contrast ratio at least 4.5:1 for text; severity always includes text.
+
+Respect reduced-motion settings for pulsing animations.
+
+12. Security Design
+
+Threat
+
+Example
+
+Mitigation in this design
+
+Broken access control (IDOR)
+
+User calls PATCH /api/incidents/:id for someone else's incident
+
+Ownership and role checks in the service layer on every route and socket event; 404 for hidden resources
+
+Privilege escalation
+
+Client sends role: ADMIN in the register body
+
+Role ignored; set only by the server; schema validation strips unknown fields
+
+Mass assignment
+
+Client sends severity or status in create body
+
+Whitelist of accepted fields; severity and status computed on the server
+
+Credential theft
+
+Database leak exposes passwords
+
+bcrypt hashes; password select: false
+
+Token theft (XSS)
+
+Script reads a token from localStorage
+
+httpOnly cookies; output escaping by React; Helmet headers
+
+CSRF
+
+Malicious site triggers requests with cookies
+
+sameSite cookies, restricted CORS origin, JSON-only endpoints
+
+Brute force
+
+Guessing passwords
+
+Rate limiting on login; generic error message
+
+NoSQL injection
+
+Body contains { "$gt": "" } operators
+
+Schema validation and sanitization of $ and . keys
+
+Abuse and spam
+
+Repeated false SOS requests
+
+Rate limiting and duplicate detection; admin reject and suspend
+
+Socket abuse
+
+Joining a room of another incident; spoofing sender
+
+Handshake authentication; participant check before join; identity from socket only
+
+Location privacy
+
+Anyone viewing responder or user location
+
+Visible only to incident participants and admins; sharing stops when incident closes
+
+Malicious upload
+
+Executable disguised as image
+
+Type and size checks, renamed files, no execution from upload folder (Stretch feature)
+
+Information leakage
+
+Stack traces in responses
+
+Generic 500 message; details only in server logs
+
+Secrets exposure
+
+Keys committed to Git
+
+Environment variables, .gitignore, .env.example
+
+13. Key Sequence Flows
+
+13.1 SOS to acceptance
+
+User         React            Express/Service        MongoDB        Socket.IO
+
+ |  press SOS  |                    |                   |               |
+
+ |------------>| get location       |                   |               |
+
+ |             |--POST /incidents-->| validate, severity|               |
+
+ |             |                    |--counter++, save->|               |
+
+ |             |                    |--find responders->|               |
+
+ |             |<--201 incident-----|                   |               |
+
+ |             |                    |--emit incident:new (eligible)---->|
+
+Responder sees alert -> presses Accept
+
+ |             |--POST /accept----->| conditional update|               |
+
+ |             |                    |--status ACCEPTED->|               |
+
+ |             |                    |--emit incident:updated (room)---->| -> user UI updates
+
+
+
+13.2 Chat message
+
+Sender client --chat:send {incidentId, text}--> Socket middleware (identity known)
+
+  -> participant + status check -> validate text -> save message (MongoDB)
+
+  -> emit chat:message to room incident:<id> -> both clients append message
+
+
+
+13.3 Live location
+
+Responder device (every 5-10 s) --responder:location--> server
+
+  -> caller is assignedResponder? status ACCEPTED/IN_PROGRESS? throttle ok?
+
+  -> update responderProfile.currentLocation -> emit to room incident:<id>
+
+  -> user map moves the responder marker
+
+
+
+13.4 Reconnect recovery
+
+Socket drops -> client shows "reconnecting" banner
+
+Socket reconnects -> client: GET /api/incidents/:id, GET /api/notifications,
+
+                      GET messages since last id -> rejoin rooms -> UI is correct again
+
+14. Traceability to the PRD
+
+PRD requirement group
+
+Design sections that satisfy it
+
+FR-AUTH (authentication)
+
+5.1 users, 6 authentication and authorization, 7.3 auth endpoints, 9 validation
+
+FR-INC (incidents)
+
+3 state machine, 4.1 severity, 4.3 incident numbers, 5.2 incidents, 7.5 incident endpoints
+
+FR-RESP (responders)
+
+4.2 alerting, 4.4 availability, 5.1 responderProfile, 7.6 responder endpoints
+
+FR-ADM (administration)
+
+6.4 permission matrix, 7.8 admin endpoints, 11.4 admin pages
+
+FR-CHAT (chat)
+
+5.3 messages, 8 socket contract, 13.2 chat flow
+
+FR-LOC (location and map)
+
+5 GeoJSON fields and indexes, 8.3 location event, 11.5 IncidentMap, 13.3
+
+FR-NOTIF (notifications)
+
+5.4 notifications, 7.7 endpoints, 8.2 events, 13.4 reconnect
+
+NFR-SEC and NFR-PRIV
+
+6, 9, 10, 12
+
+NFR-USE and NFR-ACC
+
+11.1, 11.2, 11.7
+
+
+
+Design revision sheet
+
+Topic
+
+Remember
+
+State machine
+
+One transition function, an allowed-transition map, actor guards, conditional update, statusHistory.
+
+Atomic claim
+
+findOneAndUpdate({ _id, status: PENDING }, ...) returns null for the loser, which becomes a 409.
+
+Severity
+
+Client sends inputs; server decides; admin override is logged.
+
+GeoJSON
+
+Coordinates are [lng, lat]; 2dsphere index; $near for nearby responders.
+
+Auth
+
+bcrypt hashing; short access token plus refresh token in httpOnly cookies; role from the database.
+
+Authorization
+
+Role middleware plus ownership checks in services; 404 to hide others' incidents.
+
+Embedding vs referencing
+
+Embed small bounded data (statusHistory, location); reference unbounded data (messages).
+
+REST vs sockets
+
+REST for operations; sockets for pushing change events; database is the source of truth.
+
+Socket security
+
+Handshake auth, participant check before join, identity from the socket.
+
+Errors
+
+AppError, one error middleware, one envelope, stable error codes.
+
